@@ -8,14 +8,15 @@ import requests
 import time
 from datetime import datetime
 
-# ==================== 設定 ====================
+# ==================== 初始化 ====================
 st.set_page_config(page_title="股票突破監控", layout="wide")
 st.title("股票支撐 / 阻力突破監控系統")
 
 # session_state
-for k, v in {"last_update": 0, "last_signal": None}.items():
-    if k not in st.session_state:
-        st.session_state[k] = v
+if "last_update" not in st.session_state:
+    st.session_state.last_update = 0
+if "last_signal" not in st.session_state:
+    st.session_state.last_signal = None
 
 # ==================== 側邊欄 ====================
 symbol = st.sidebar.text_input("股票代號", "TSLA").upper().strip()
@@ -49,7 +50,7 @@ def send_telegram_alert(msg: str) -> bool:
 # ==================== 支撐阻力 ====================
 def find_support_resistance_fractal(df: pd.DataFrame, window: int = 5):
     if len(df) < window * 2 + 1:
-        return df["Low"].min(), df["High"].max()
+        return float(df["Low"].min()), float(df["High"].max())
 
     high, low = df["High"], df["Low"]
     res_pts, sup_pts = [], []
@@ -74,9 +75,10 @@ def find_support_resistance_fractal(df: pd.DataFrame, window: int = 5):
         clusters.append(np.mean(cur))
         return clusters
 
-    res_lv = cluster(res_pts) or [high.max()]
-    sup_lv = cluster(sup_pts) or [low.min()]
-    cur = df["Close"].iloc[-1]
+    res_lv = cluster(res_pts) or [float(high.max())]
+    sup_lv = cluster(sup_pts) or [float(low.min())]
+    cur = float(df["Close"].iloc[-1])
+
     resistance = max(res_lv, key=lambda x: (-abs(x - cur), x))
     support = min(sup_lv, key=lambda x: (-abs(x - cur), -x))
     return float(support), float(resistance)
@@ -87,30 +89,34 @@ def detect_breakout(df: pd.DataFrame, support: float, resistance: float,
     if len(df) < 2:
         return None
 
-    # 關鍵：強制取單一值，防 Series
+    # 關鍵：100% 取單一 float 值
     try:
-        last_close = float(df["Close"].iat[-1])   # .iat 比 .iloc 更安全
-        prev_close = float(df["Close"].iat[-2])
-        last_volume = float(df["Volume"].iat[-1])
-    except Exception:
+        # 使用 .iloc + .item() 最安全
+        last_close = df["Close"].iloc[-1].item()
+        prev_close = df["Close"].iloc[-2].item()
+        last_volume = df["Volume"].iloc[-1].item()
+    except Exception as e:
+        st.error(f"取值失敗：{e}")
         return None
 
+    # 均量
     vol_tail = df["Volume"].tail(lookback)
-    avg_volume = float(vol_tail.mean()) if not vol_tail.empty else last_volume
+    avg_volume = vol_tail.mean().item() if not vol_tail.empty else last_volume
     if avg_volume == 0:
         avg_volume = 1
 
     buffer = max(support, resistance) * buffer_pct
 
-    up   = prev_close <= resistance - buffer and last_close > resistance
-    down = prev_close >= support + buffer and last_close < support
-    vol_ok = (not use_volume) or (last_volume > avg_volume * vol_mult)
+    # 明確布林判斷
+    breakout_up = (prev_close <= resistance - buffer) and (last_close > resistance)
+    breakout_down = (prev_close >= support + buffer) and (last_close < support)
+    volume_ok = (not use_volume) or (last_volume > avg_volume * vol_mult)
 
     ratio = last_volume / avg_volume
 
-    if up and vol_ok:
+    if breakout_up and volume_ok:
         return f"突破阻力！\n股票: <b>{symbol}</b>\n現價: <b>{last_close:.2f}</b>\n阻力: {resistance:.2f}\n成交量: {last_volume/1e6:.1f}M ({ratio:.1f}x)"
-    if down and vol_ok:
+    if breakout_down and volume_ok:
         return f"跌破支撐！\n股票: <b>{symbol}</b>\n現價: <b>{last_close:.2f}</b>\n支撐: {support:.2f}\n成交量: {last_volume/1e6:.1f}M ({ratio:.1f}x)"
     return None
 
@@ -120,13 +126,13 @@ def load_and_update_data():
         period_map = {"1m": "2d", "5m": "5d", "15m": "10d", "30m": "20d", "1h": "1mo", "1d": "3mo"}
         period = period_map.get(interval, "5d")
 
-        with st.spinner(f"下載 {symbol}..."):
+        with st.spinner("下載資料…"):
             df = yf.download(symbol, period=period, interval=interval, progress=False, auto_adjust=True)
             if df.empty:
                 st.error("無資料")
                 return
 
-            # 關鍵：移除重複索引
+            # 關鍵：清除重複索引
             df = df[~df.index.duplicated(keep='last')].copy()
             df.dropna(inplace=True)
 
@@ -152,9 +158,9 @@ def load_and_update_data():
 
         # 資訊
         c1, c2, c3 = st.columns(3)
-        with c1: st.metric("現價", f"{df['Close'].iat[-1]:.2f}")
-        with c2: st.metric("支撐", f"{support:.2f}", f"{df['Close'].iat[-1]-support:+.2f}")
-        with c3: st.metric("阻力", f"{resistance:.2f}", f"{resistance-df['Close'].iat[-1]:+.2f}")
+        with c1: st.metric("現價", f"{df['Close'].iloc[-1]:.2f}")
+        with c2: st.metric("支撐", f"{support:.2f}", f"{df['Close'].iloc[-1]-support:+.2f}")
+        with c3: st.metric("阻力", f"{resistance:.2f}", f"{resistance-df['Close'].iloc[-1]:+.2f}")
 
         # 訊號
         if signal:
@@ -173,11 +179,11 @@ refresh_seconds = interval_map[update_freq]
 
 if auto_update:
     now = time.time()
-    remaining = int(refresh_seconds - (now - st.session_state.last_update))
-    if remaining <= 0:
+    if now - st.session_state.last_update >= refresh_seconds:
         st.session_state.last_update = now
         st.rerun()
     else:
+        remaining = int(refresh_seconds - (now - st.session_state.last_update))
         st.sidebar.caption(f"下次更新：{max(0, remaining)} 秒")
 else:
     st.sidebar.caption("手動模式")
