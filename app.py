@@ -74,7 +74,7 @@ def send_telegram_alert(msg: str) -> bool:
         st.warning(f"Telegram 發送失敗: {e}")
         return False
 
-# ==================== 測試按鈕（正確 emoji） ====================
+# ==================== 測試按鈕（使用正確 emoji） ====================
 st.sidebar.markdown("### Telegram 通知測試")
 if st.sidebar.button("發送測試訊息", type="secondary", use_container_width=True):
     if not telegram_ready:
