@@ -35,7 +35,7 @@ period_options = {
     "1年": "1y", "2年": "2y", "5年": "5y", "10年": "10y",
     "今年至今": "ytd", "全部": "max"
 }
-period_label = st.sidebar.selectbox("資料範圍", options=list(period_options.keys()), index=2)
+period_label = st.sidebar.selectbox("資料範圍", options=list(period_options.keys()), index=1)
 period = period_options[period_label]
 
 lookback = st.sidebar.slider("觀察根數", 20, 500, 100, 10)
