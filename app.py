@@ -31,7 +31,7 @@ interval = interval_options[interval_label]
 period_options = {
     "1天": "1d", "5天": "5d", "10天": "10d", "1個月": "1mo", "3個月": "3mo", "1年": "1y"
 }
-period_label = st.sidebar.selectbox("資料範圍", options=list(period_options.keys()), index=1)
+period_label = st.sidebar.selectbox("資料範圍", options=list(period_options.keys()), index=2)
 period = period_options[period_label]
 
 lookback = st.sidebar.slider("觀察根數", 20, 300, 100, 10)
@@ -71,7 +71,7 @@ def play_alert_sound():
         </audio>
         """, unsafe_allow_html=True)
 
-# ==================== 價位觸碰分析 ====================
+# ==================== 價位觸碰分析（每檔獨立） ====================
 def analyze_price_touches(df: pd.DataFrame, levels: List[float], tolerance: float = 0.005) -> List[dict]:
     touches = []
     high, low = df["High"], df["Low"]
@@ -209,8 +209,8 @@ def process_symbol(symbol: str):
     df = fetch_data(symbol, interval, period)
     if df is None or len(df) < 15:
         return None, None, None, None, None, None, [], None
-    df_display = df.copy()
-    df = df.iloc[:-1]
+    df_display = df.copy()  # 完整資料
+    df = df.iloc[:-1]       # 分析用（不含最新一根）
     if len(df) < 10:
         return None, None, None, None, None, None, [], None
     window = max(5, lookback // 15)
@@ -272,7 +272,7 @@ with st.spinner("下載資料與分析中…"):
         results[symbol] = {
             "fig": fig, "price": price, "support": support,
             "resistance": resistance, "signal": signal, "key": key,
-            "levels": levels, "df_display": df_display
+            "levels": levels, "df_display": df_display  # 每檔獨立
         }
         if signal:
             breakout_signals.append((symbol, signal, key))
@@ -284,25 +284,31 @@ for symbol in symbols:
         st.error(f"**{symbol}** 無資料")
         continue
 
-    # 突破高亮
     if data["signal"]:
         st.markdown(f"### **{symbol}**")
         st.success(data["signal"])
-        send_telegram_alert(data["signal"])
-        play_alert_sound()
+        if st.session_state.last_signal_keys.get(key) != key:
+            st.session_state.last_signal_keys[key] = key
+            st.session_state.signal_history.append({
+                "time": datetime.now().strftime("%H:%M:%S"),
+                "symbol": symbol,
+                "signal": data["signal"]
+            })
+            if len(st.session_state.signal_history) > 20:
+                st.session_state.signal_history.pop(0)
+            send_telegram_alert(data["signal"])
+            play_alert_sound()
     else:
         st.markdown(f"### {symbol}")
 
-    # 圖表
     st.plotly_chart(data["fig"], use_container_width=True)
 
-    # 指標
     c1, c2, c3 = st.columns(3)
     with c1: st.metric("現價", f"{data['price']:.2f}")
     with c2: st.metric("支撐", f"{data['support']:.2f}", f"{data['price']-data['support']:+.2f}")
     with c3: st.metric("阻力", f"{data['resistance']:.2f}", f"{data['resistance']-data['price']:+.2f}")
 
-    # 觸碰分析
+    # 每檔獨立觸碰分析
     if show_touches and data["levels"] and data["df_display"] is not None:
         touches = analyze_price_touches(data["df_display"], data["levels"])
         if touches:
