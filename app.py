@@ -78,29 +78,35 @@ def play_alert_sound():
         </audio>
         """, unsafe_allow_html=True)
 
-# ==================== 價位觸碰分析 ====================
+# ==================== 價位觸碰分析（終極安全版） ====================
 def analyze_price_touches(df: pd.DataFrame, levels: List[float], tolerance: float = 0.005) -> List[dict]:
     touches = []
     high, low = df["High"], df["Low"]
     for level in levels:
         if not np.isfinite(level):
             continue
-        sup_touch = ((low <= level * (1 + tolerance)) & (low >= level * (1 - tolerance))).sum()
-        res_touch = ((high >= level * (1 - tolerance)) & (high <= level * (1 + tolerance))).sum()
+
+        # 強制轉 int，避免 Series 問題
+        sup_touch = int(((low <= level * (1 + tolerance)) & (low >= level * (1 - tolerance))).sum())
+        res_touch = int(((high >= level * (1 - tolerance)) & (high <= level * (1 + tolerance))).sum())
         total_touch = sup_touch + res_touch
+
         if total_touch == 0:
             continue
+
         strength = "強" if total_touch >= 3 else "次"
         role = "支撐" if sup_touch > res_touch else "阻力" if res_touch > sup_touch else "支阻"
         meaning = f"每次{'止跌反彈' if role=='支撐' else '遇壓下跌'}"
         if total_touch == 2:
             meaning = "無法突破" if role == "阻力" else "小幅反彈"
+
         touches.append({
             "價位": f"${level:.2f}",
             "觸碰次數": f"{total_touch} 次",
             "結果": meaning,
             "意義": f"{strength}{role}"
         })
+
     return sorted(touches, key=lambda x: float(x["價位"][1:]), reverse=True)
 
 # ==================== 支撐阻力 ====================
