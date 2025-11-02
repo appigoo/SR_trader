@@ -30,7 +30,7 @@ interval_options = {
 interval_label = st.sidebar.selectbox(
     "K線週期",
     options=list(interval_options.keys()),
-    index=3  # 預設 5m
+    index=3
 )
 interval = interval_options[interval_label]
 
@@ -44,7 +44,7 @@ period_options = {
 period_label = st.sidebar.selectbox(
     "資料範圍",
     options=list(period_options.keys()),
-    index=2  # 預設 10d
+    index=2
 )
 period = period_options[period_label]
 
@@ -56,7 +56,6 @@ use_volume_filter = st.sidebar.checkbox("成交量確認 (>1.5x)", True)
 buffer_pct = st.sidebar.slider("緩衝區 (%)", 0.01, 2.0, 0.1, 0.01) / 100
 sound_alert = st.sidebar.checkbox("聲音提醒", True)
 
-# --- 說明 ---
 st.sidebar.markdown("---")
 st.sidebar.caption(f"**K線**：{interval_label} | **範圍**：{period_label}")
 
@@ -89,13 +88,18 @@ def play_alert_sound():
         </audio>
         """, unsafe_allow_html=True)
 
-# ==================== 支撐阻力 ====================
+# ==================== 支撐阻力（永不崩潰版） ====================
 def find_support_resistance_fractal(df: pd.DataFrame, window: int = 5, min_touches: int = 2):
     if len(df) < window * 2 + 1:
-        low_min = df["Low"].min(skipna=True)
-        high_max = df["High"].max(skipna=True)
-        return (float(low_min.item()) if pd.notna(low_min) else 0.0,
-                float(high_max.item()) if pd.notna(high_max) else 0.0)
+        try:
+            low_min = float(df["Low"].min(skipna=True).item())
+        except:
+            low_min = 0.0
+        try:
+            high_max = float(df["High"].max(skipna=True).item())
+        except:
+            high_max = 0.0
+        return low_min, high_max
 
     high, low = df["High"], df["Low"]
     res_pts, sup_pts = [], []
@@ -108,11 +112,16 @@ def find_support_resistance_fractal(df: pd.DataFrame, window: int = 5, min_touch
         if segment_high.empty or segment_low.empty:
             continue
 
-        max_high_val = segment_high.max(skipna=True)
-        min_low_val = segment_low.min(skipna=True)
+        # 強制取純量
+        try:
+            max_high = float(segment_high.max(skipna=True).item())
+        except:
+            max_high = np.nan
 
-        max_high = float(max_high_val.item()) if pd.notna(max_high_val) else np.nan
-        min_low = float(min_low_val.item()) if pd.notna(min_low_val) else np.nan
+        try:
+            min_low = float(segment_low.min(skipna=True).item())
+        except:
+            min_low = np.nan
 
         if not (np.isfinite(max_high) and np.isfinite(min_low)):
             continue
@@ -141,11 +150,21 @@ def find_support_resistance_fractal(df: pd.DataFrame, window: int = 5, min_touch
     res_lv = cluster_points(res_pts)
     sup_lv = cluster_points(sup_pts)
 
-    close_last = df["Close"].iloc[-1]
-    cur = float(close_last.item()) if pd.notna(close_last) else 0.0
+    # 安全取最新收盤
+    try:
+        cur = float(df["Close"].iloc[-1].item())
+    except:
+        cur = 0.0
 
-    high_max = float(df["High"].max(skipna=True).item()) if pd.notna(df["High"].max(skipna=True)) else cur
-    low_min = float(df["Low"].min(skipna=True).item()) if pd.notna(df["Low"].min(skipna=True)) else cur
+    # 防空值
+    try:
+        high_max = float(df["High"].max(skipna=True).item())
+    except:
+        high_max = cur
+    try:
+        low_min = float(df["Low"].min(skipna=True).item())
+    except:
+        low_min = cur
 
     resistance = max(res_lv, key=lambda x: (-abs(x - cur), x)) if res_lv else high_max
     support = min(sup_lv, key=lambda x: (-abs(x - cur), -x)) if sup_lv else low_min
@@ -159,15 +178,18 @@ def detect_breakout(df: pd.DataFrame, support: float, resistance: float,
         return None, None
 
     try:
-        last_close = float(df["Close"].iloc[-2].item()) if pd.notna(df["Close"].iloc[-2]) else 0.0
-        prev_close = float(df["Close"].iloc[-3].item()) if pd.notna(df["Close"].iloc[-3]) else 0.0
-        prev2_close = float(df["Close"].iloc[-4].item()) if len(df) >= 4 and pd.notna(df["Close"].iloc[-4]) else prev_close
-        last_volume = float(df["Volume"].iloc[-2].item()) if pd.notna(df["Volume"].iloc[-2]) else 0.0
-    except Exception:
+        last_close = float(df["Close"].iloc[-2].item())
+        prev_close = float(df["Close"].iloc[-3].item())
+        prev2_close = float(df["Close"].iloc[-4].item()) if len(df) >= 4 else prev_close
+        last_volume = float(df["Volume"].iloc[-2].item())
+    except:
         return None, None
 
     vol_tail = df["Volume"].iloc[-(lookback + 2):-2]
-    avg_volume = float(vol_tail.mean(skipna=True).item()) if pd.notna(vol_tail.mean(skipna=True)) else 1.0
+    try:
+        avg_volume = float(vol_tail.mean(skipna=True).item())
+    except:
+        avg_volume = 1.0
     vol_ratio = last_volume / avg_volume if avg_volume > 0 else 0
     vol_ok = (not use_volume) or (vol_ratio > vol_mult)
 
@@ -197,7 +219,7 @@ def detect_breakout(df: pd.DataFrame, support: float, resistance: float,
 
     return None, None
 
-# ==================== 資料快取（自動對應 period） ====================
+# ==================== 資料快取 ====================
 @st.cache_data(ttl=60, show_spinner=False)
 def fetch_data(_symbol: str, _interval: str, _period: str) -> Optional[pd.DataFrame]:
     try:
@@ -253,7 +275,10 @@ def process_symbol(symbol: str):
         yaxis=dict(title="價格"), yaxis2=dict(title="成交量", overlaying="y", side="right")
     )
 
-    current_price = float(df_display["Close"].iloc[-1].item()) if pd.notna(df_display["Close"].iloc[-1]) else 0.0
+    try:
+        current_price = float(df_display["Close"].iloc[-1].item())
+    except:
+        current_price = 0.0
     return fig, current_price, support, resistance, signal, signal_key
 
 # ==================== 執行 ====================
