@@ -59,23 +59,38 @@ def play_alert_sound():
         </audio>
         """, unsafe_allow_html=True)
 
-# ==================== 支撐阻力 ====================
+# ==================== 支撐阻力（終極防呆版） ====================
 def find_support_resistance_fractal(df: pd.DataFrame, window: int = 5, min_touches: int = 2):
     if len(df) < window * 2 + 1:
-        return float(df["Low"].min()), float(df["High"].max())
+        return float(df["Low"].min(skipna=True)), float(df["High"].max(skipna=True))
 
     high, low = df["High"], df["Low"]
     res_pts, sup_pts = [], []
 
     for i in range(window, len(df) - window):
         sl = slice(i - window, i + window + 1)
-        if high.iloc[i] == high.iloc[sl].max():
-            res_pts.append((i, float(high.iloc[i])))
-        if low.iloc[i] == low.iloc[sl].min():
-            sup_pts.append((i, float(low.iloc[i])))
+        segment_high = high.iloc[sl]
+        segment_low = low.iloc[sl]
+
+        if segment_high.empty or segment_low.empty:
+            continue
+
+        # 強制 skipna + float
+        max_high = float(segment_high.max(skipna=True))
+        min_low = float(segment_low.min(skipna=True))
+
+        if not (np.isfinite(max_high) and np.isfinite(min_low)):
+            continue
+
+        # 使用 np.isclose 避免浮點誤差
+        if np.isclose(high.iloc[i], max_high, atol=1e-6):
+            res_pts.append((i, max_high))
+        if np.isclose(low.iloc[i], min_low, atol=1e-6):
+            sup_pts.append((i, min_low))
 
     def cluster_points(points, tol=0.005):
-        if not points: return []
+        if not points:
+            return []
         points = sorted(points, key=lambda x: x[1])
         clusters = []
         current = [points[0]]
@@ -93,9 +108,9 @@ def find_support_resistance_fractal(df: pd.DataFrame, window: int = 5, min_touch
     res_lv = cluster_points(res_pts)
     sup_lv = cluster_points(sup_pts)
 
-    cur = df["Close"].iloc[-1] if len(df) > 0 else 0
-    resistance = max(res_lv, key=lambda x: (-abs(x - cur), x)) if res_lv else float(df["High"].max())
-    support = min(sup_lv, key=lambda x: (-abs(x - cur), -x)) if sup_lv else float(df["Low"].min())
+    cur = df["Close"].iloc[-1] if len(df) > 0 and np.isfinite(df["Close"].iloc[-1]) else 0
+    resistance = max(res_lv, key=lambda x: (-abs(x - cur), x)) if res_lv else float(df["High"].max(skipna=True))
+    support = min(sup_lv, key=lambda x: (-abs(x - cur), -x)) if sup_lv else float(df["Low"].min(skipna=True))
 
     return float(support), float(resistance)
 
@@ -110,11 +125,11 @@ def detect_breakout(df: pd.DataFrame, support: float, resistance: float,
         prev_close = float(df["Close"].iloc[-3])
         prev2_close = float(df["Close"].iloc[-4]) if len(df) >= 4 else prev_close
         last_volume = float(df["Volume"].iloc[-2])
-    except Exception as e:
+    except Exception:
         return None, None
 
     vol_tail = df["Volume"].iloc[-(lookback + 2):-2]
-    avg_volume = vol_tail.mean()
+    avg_volume = vol_tail.mean(skipna=True)
     if pd.isna(avg_volume) or avg_volume <= 0:
         avg_volume = 1
     vol_ratio = last_volume / avg_volume
@@ -123,9 +138,9 @@ def detect_breakout(df: pd.DataFrame, support: float, resistance: float,
     buffer = max(support, resistance) * buffer_pct
 
     # 突破阻力
-    if (prev2_close <= (resistance - buffer) and
-        prev_close <= (resistance - buffer) and
-        last_close > resistance and vol_ok):
+    if (np.isclose(prev2_close, resistance - buffer, atol=1e-4) or prev2_close <= (resistance - buffer)) and \
+       (np.isclose(prev_close, resistance - buffer, atol=1e-4) or prev_close <= (resistance - buffer)) and \
+       last_close > resistance and vol_ok:
         msg = (f"突破阻力！\n"
                f"股票: <b>{symbol}</b>\n"
                f"現價: <b>{last_close:.2f}</b>\n"
@@ -135,9 +150,9 @@ def detect_breakout(df: pd.DataFrame, support: float, resistance: float,
         return msg, key
 
     # 跌破支撐
-    if (prev2_close >= (support + buffer) and
-        prev_close >= (support + buffer) and
-        last_close < support and vol_ok):
+    if (np.isclose(prev2_close, support + buffer, atol=1e-4) or prev2_close >= (support + buffer)) and \
+       (np.isclose(prev_close, support + buffer, atol=1e-4) or prev_close >= (support + buffer)) and \
+       last_close < support and vol_ok:
         msg = (f"跌破支撐！\n"
                f"股票: <b>{symbol}</b>\n"
                f"現價: <b>{last_close:.2f}</b>\n"
@@ -149,7 +164,7 @@ def detect_breakout(df: pd.DataFrame, support: float, resistance: float,
     return None, None
 
 # ==================== 資料快取 ====================
-@st.cache_data(ttl=60, show_spinner=False)
+@st.cache_data(ttl=60, show_spinner=False, hash_funcs={pd.DataFrame: lambda df: hash(df.to_json())})
 def fetch_data(_symbol: str, _interval: str) -> Optional[pd.DataFrame]:
     period_map = {
         "1m": "2d", "5m": "5d", "15m": "10d", "30m": "20d",
@@ -159,23 +174,25 @@ def fetch_data(_symbol: str, _interval: str) -> Optional[pd.DataFrame]:
     try:
         df = yf.download(_symbol, period=period, interval=_interval,
                          progress=False, auto_adjust=True, threads=True)
-        if df.empty:
+        if df.empty or df.isna().all().all():
             return None
         df = df[~df.index.duplicated(keep='last')].copy()
+        df = df.dropna(how='all')  # 移除全 NaN 列
         return df
-    except:
+    except Exception as e:
+        st.warning(f"{_symbol} 下載失敗: {e}")
         return None
 
 # ==================== 主程式 ====================
 def process_symbol(symbol: str):
     df = fetch_data(symbol, interval)
     if df is None or len(df) < 15:
-        return None, None, None, None
+        return None, None, None, None, None, None
 
     df_display = df.copy()
     df = df.iloc[:-1]  # 排除未完成棒
     if len(df) < 10:
-        return None, None, None, None
+        return None, None, None, None, None, None
 
     window = max(5, lookback // 15)
     support, resistance = find_support_resistance_fractal(df, window=window, min_touches=2)
@@ -208,14 +225,14 @@ def process_symbol(symbol: str):
         yaxis=dict(title="價格"), yaxis2=dict(title="成交量", overlaying="y", side="right")
     )
 
-    current_price = df_display["Close"].iloc[-1]
+    current_price = df_display["Close"].iloc[-1] if np.isfinite(df_display["Close"].iloc[-1]) else 0
     return fig, current_price, support, resistance, signal, signal_key
 
 # ==================== 執行 ====================
 interval_map = {"30秒": 30, "60秒": 60, "3分鐘": 180, "5分鐘": 300}
 refresh_seconds = interval_map[update_freq]
 
-# 自動更新邏輯
+# 自動更新
 if auto_update:
     now = time.time()
     if now - st.session_state.last_update >= refresh_seconds:
@@ -227,7 +244,7 @@ if auto_update:
         st.sidebar.caption(f"下次更新：{max(0, remaining)} 秒")
 else:
     if st.sidebar.button("手動更新", type="primary"):
-        pass  # 觸發 rerun
+        st.rerun()
 
 # 主流程
 if not symbols:
@@ -269,7 +286,7 @@ if breakout_signals:
 else:
     st.info("無突破訊號")
 
-# 分頁顯示每檔
+# 分頁顯示
 tabs = st.tabs(symbols)
 for tab, symbol in zip(tabs, symbols):
     with tab:
