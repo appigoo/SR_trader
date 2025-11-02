@@ -42,7 +42,7 @@ show_touches = st.sidebar.checkbox("顯示價位觸碰分析", True)
 st.sidebar.markdown("---")
 st.sidebar.caption(f"**K線**：{interval_label} | **範圍**：{period_label}")
 
-# ==================== Telegram 設定與測試 ====================
+# ==================== Telegram 設定 ====================
 try:
     BOT_TOKEN = st.secrets["telegram"]["BOT_TOKEN"]
     CHAT_ID = st.secrets["telegram"]["CHAT_ID"]
@@ -52,24 +52,7 @@ except Exception:
     telegram_ready = False
     st.sidebar.error("Telegram 設定錯誤，請檢查 secrets.toml")
 
-# --- 測試按鈕 ---
-st.sidebar.markdown("### Telegram 通知測試")
-if st.sidebar.button("發送測試訊息", type="secondary", use_container_width=True):
-    if not telegram_ready:
-        st.toast("Telegram 設定錯誤", icon="error")
-    else:
-        test_msg = (
-            "<b>Telegram 通知測試成功！</b>\n"
-            "這是一條來自 <i>多股票監控系統</i> 的測試訊息。\n"
-            "時間: <code>" + datetime.now().strftime("%H:%M:%S") + "</code>"
-        )
-        with st.spinner("發送中…"):
-            if send_telegram_alert(test_msg):
-                st.toast("測試訊息已發送！請檢查 Telegram", icon="success")
-            else:
-                st.toast("發送失敗，請檢查設定", icon="error")
-
-# ==================== Telegram 發送函數 ====================
+# ==================== Telegram 發送函數（必須在前） ====================
 def send_telegram_alert(msg: str) -> bool:
     if not (BOT_TOKEN and CHAT_ID):
         return False
@@ -90,6 +73,23 @@ def send_telegram_alert(msg: str) -> bool:
     except Exception as e:
         st.warning(f"Telegram 發送失敗: {e}")
         return False
+
+# ==================== 測試按鈕（在函數之後） ====================
+st.sidebar.markdown("### Telegram 通知測試")
+if st.sidebar.button("發送測試訊息", type="secondary", use_container_width=True):
+    if not telegram_ready:
+        st.toast("Telegram 設定錯誤", icon="error")
+    else:
+        test_msg = (
+            "<b>Telegram 通知測試成功！</b>\n"
+            "這是一條來自 <i>多股票監控系統</i> 的測試訊息。\n"
+            "時間: <code>" + datetime.now().strftime("%H:%M:%S") + "</code>"
+        )
+        with st.spinner("發送中…"):
+            if send_telegram_alert(test_msg):
+                st.toast("測試訊息已發送！請檢查 Telegram", icon="success")
+            else:
+                st.toast("發送失敗，請檢查設定", icon="error")
 
 # ==================== 聲音提醒 ====================
 def play_alert_sound():
@@ -311,7 +311,7 @@ for symbol in symbols:
         st.markdown(f"### **{symbol}**")
         st.success(data["signal"])
         if st.session_state.last_signal_keys.get(key) != key:
-            st.session_state.last_signal_keys[key] = key
+            st.session_state["last_signal_keys"][key] = key
             st.session_state.signal_history.append({
                 "time": datetime.now().strftime("%H:%M:%S"),
                 "symbol": symbol,
