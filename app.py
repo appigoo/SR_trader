@@ -7,7 +7,7 @@ import plotly.graph_objects as go
 import requests
 import time
 from datetime import datetime
-from typing import Optional
+from typing import Optional, List, Tuple
 
 # ==================== 初始化 ====================
 st.set_page_config(page_title="專業多股票突破監控", layout="wide")
@@ -22,39 +22,29 @@ for key in ["last_update", "last_signal_keys", "signal_history"]:
 symbols_input = st.sidebar.text_input("股票代號（逗號分隔）", "AAPL, TSLA, NVDA")
 symbols = [s.strip().upper() for s in symbols_input.split(",") if s.strip()]
 
-# --- 自訂 K 線週期 ---
 interval_options = {
     "1分鐘": "1m", "2分鐘": "2m", "3分鐘": "3m", "5分鐘": "5m", "10分鐘": "10m",
     "15分鐘": "15m", "30分鐘": "30m", "1小時": "60m", "日線": "1d", "週線": "1wk", "月線": "1mo"
 }
-interval_label = st.sidebar.selectbox(
-    "K線週期",
-    options=list(interval_options.keys()),
-    index=3
-)
+interval_label = st.sidebar.selectbox("K線週期", options=list(interval_options.keys()), index=3)
 interval = interval_options[interval_label]
 
-# --- 自訂資料範圍 ---
 period_options = {
     "1天": "1d", "5天": "5d", "10天": "10d",
     "1個月": "1mo", "3個月": "3mo", "6個月": "6mo",
     "1年": "1y", "2年": "2y", "5年": "5y", "10年": "10y",
     "今年至今": "ytd", "全部": "max"
 }
-period_label = st.sidebar.selectbox(
-    "資料範圍",
-    options=list(period_options.keys()),
-    index=2
-)
+period_label = st.sidebar.selectbox("資料範圍", options=list(period_options.keys()), index=2)
 period = period_options[period_label]
 
-# --- 其他參數 ---
 lookback = st.sidebar.slider("觀察根數", 20, 500, 100, 10)
 update_freq = st.sidebar.selectbox("更新頻率", ["30秒", "60秒", "3分鐘", "5分鐘"], index=1)
 auto_update = st.sidebar.checkbox("自動更新", True)
 use_volume_filter = st.sidebar.checkbox("成交量確認 (>1.5x)", True)
 buffer_pct = st.sidebar.slider("緩衝區 (%)", 0.01, 2.0, 0.1, 0.01) / 100
 sound_alert = st.sidebar.checkbox("聲音提醒", True)
+show_touches = st.sidebar.checkbox("顯示價位觸碰分析", True)
 
 st.sidebar.markdown("---")
 st.sidebar.caption(f"**K線**：{interval_label} | **範圍**：{period_label}")
@@ -88,17 +78,44 @@ def play_alert_sound():
         </audio>
         """, unsafe_allow_html=True)
 
-# ==================== 支撐阻力（永不崩潰版） ====================
+# ==================== 價位觸碰分析 ====================
+def analyze_price_touches(df: pd.DataFrame, levels: List[float], tolerance: float = 0.005) -> List[dict]:
+    touches = []
+    high, low = df["High"], df["Low"]
+    for level in levels:
+        if not np.isfinite(level):
+            continue
+        # 計算觸碰次數
+        sup_touch = ((low <= level * (1 + tolerance)) & (low >= level * (1 - tolerance))).sum()
+        res_touch = ((high >= level * (1 - tolerance)) & (high <= level * (1 + tolerance))).sum()
+        total_touch = sup_touch + res_touch
+        
+        if total_touch == 0:
+            continue
+            
+        # 判斷強弱
+        strength = "強" if total_touch >= 3 else "次"
+        role = "支撐" if sup_touch > res_touch else "阻力" if res_touch > sup_touch else "支阻"
+        meaning = f"每次{'止跌反彈' if role=='支撐' else '遇壓下跌'}"
+        if total_touch == 2:
+            meaning = "無法突破" if role == "阻力" else "小幅反彈"
+        
+        touches.append({
+            "價位": f"${level:.2f}",
+            "觸碰次數": f"{total_touch} 次",
+            "結果": meaning,
+            "意義": f"{strength}{role}"
+        })
+    return sorted(touches, key=lambda x: float(x["價位"][1:]), reverse=True)
+
+# ==================== 支撐阻力 ====================
 def find_support_resistance_fractal(df: pd.DataFrame, window: int = 5, min_touches: int = 2):
     if len(df) < window * 2 + 1:
         try:
             low_min = float(df["Low"].min(skipna=True).item())
-        except:
-            low_min = 0.0
-        try:
             high_max = float(df["High"].max(skipna=True).item())
         except:
-            high_max = 0.0
+            low_min = high_max = 0.0
         return low_min, high_max
 
     high, low = df["High"], df["Low"]
@@ -112,16 +129,11 @@ def find_support_resistance_fractal(df: pd.DataFrame, window: int = 5, min_touch
         if segment_high.empty or segment_low.empty:
             continue
 
-        # 強制取純量
         try:
             max_high = float(segment_high.max(skipna=True).item())
-        except:
-            max_high = np.nan
-
-        try:
             min_low = float(segment_low.min(skipna=True).item())
         except:
-            min_low = np.nan
+            continue
 
         if not (np.isfinite(max_high) and np.isfinite(min_low)):
             continue
@@ -150,26 +162,23 @@ def find_support_resistance_fractal(df: pd.DataFrame, window: int = 5, min_touch
     res_lv = cluster_points(res_pts)
     sup_lv = cluster_points(sup_pts)
 
-    # 安全取最新收盤
     try:
         cur = float(df["Close"].iloc[-1].item())
     except:
         cur = 0.0
 
-    # 防空值
     try:
         high_max = float(df["High"].max(skipna=True).item())
-    except:
-        high_max = cur
-    try:
         low_min = float(df["Low"].min(skipna=True).item())
     except:
-        low_min = cur
+        high_max = low_min = cur
 
     resistance = max(res_lv, key=lambda x: (-abs(x - cur), x)) if res_lv else high_max
     support = min(sup_lv, key=lambda x: (-abs(x - cur), -x)) if sup_lv else low_min
 
-    return support, resistance
+    # 收集所有水平線
+    all_levels = list(set(res_lv + sup_lv))
+    return support, resistance, all_levels
 
 # ==================== 突破偵測 ====================
 def detect_breakout(df: pd.DataFrame, support: float, resistance: float,
@@ -238,18 +247,19 @@ def fetch_data(_symbol: str, _interval: str, _period: str) -> Optional[pd.DataFr
 def process_symbol(symbol: str):
     df = fetch_data(symbol, interval, period)
     if df is None or len(df) < 15:
-        return None, None, None, None, None, None
+        return None, None, None, None, None, None, []
 
     df_display = df.copy()
     df = df.iloc[:-1]
     if len(df) < 10:
-        return None, None, None, None, None, None
+        return None, None, None, None, None, None, []
 
     window = max(5, lookback // 15)
-    support, resistance = find_support_resistance_fractal(df, window=window, min_touches=2)
+    support, resistance, all_levels = find_support_resistance_fractal(df, window=window, min_touches=2)
     signal, signal_key = detect_breakout(df, support, resistance, buffer_pct,
                                          use_volume_filter, 1.5, lookback, symbol)
 
+    # 圖表
     fig = go.Figure()
     fig.add_trace(go.Candlestick(
         x=df_display.index, open=df_display["Open"], high=df_display["High"],
@@ -259,6 +269,18 @@ def process_symbol(symbol: str):
                   annotation_text=f"支撐 {support:.2f}")
     fig.add_hline(y=resistance, line_dash="dot", line_color="red",
                   annotation_text=f"阻力 {resistance:.2f}")
+
+    # 標註所有水平線
+    colors = {"support": "green", "resistance": "red"}
+    for level in all_levels:
+        if abs(level - support) < 1e-6:
+            color = "green"
+        elif abs(level - resistance) < 1e-6:
+            color = "red"
+        else:
+            color = "gray"
+        fig.add_hline(y=level, line_dash="dot", line_color=color, line_width=1)
+
     fig.add_trace(go.Bar(x=df_display.index, y=df_display["Volume"],
                          name="成交量", marker_color="lightblue", yaxis="y2"))
 
@@ -279,7 +301,8 @@ def process_symbol(symbol: str):
         current_price = float(df_display["Close"].iloc[-1].item())
     except:
         current_price = 0.0
-    return fig, current_price, support, resistance, signal, signal_key
+
+    return fig, current_price, support, resistance, signal, signal_key, all_levels
 
 # ==================== 執行 ====================
 interval_map = {"30秒": 30, "60秒": 60, "3分鐘": 180, "5分鐘": 300}
@@ -309,14 +332,15 @@ results = {}
 
 with st.spinner("下載資料與分析中…"):
     for symbol in symbols:
-        fig, price, support, resistance, signal, key = process_symbol(symbol)
+        fig, price, support, resistance, signal, key, levels = process_symbol(symbol)
         results[symbol] = {
             "fig": fig, "price": price, "support": support,
-            "resistance": resistance, "signal": signal, "key": key
+            "resistance": resistance, "signal": signal, "key": key, "levels": levels
         }
         if signal:
             breakout_signals.append((symbol, signal, key))
 
+# 突破訊號
 if breakout_signals:
     st.success("即時突破訊號！")
     for sym, sig, key in breakout_signals:
@@ -335,6 +359,7 @@ if breakout_signals:
 else:
     st.info("無突破訊號")
 
+# 分頁顯示
 tabs = st.tabs(symbols)
 for tab, symbol in zip(tabs, symbols):
     with tab:
@@ -355,6 +380,17 @@ for tab, symbol in zip(tabs, symbols):
         else:
             st.info("無訊號")
 
+        # === 交易建議表 ===
+        if show_touches and data["levels"]:
+            st.subheader(f"**{symbol} 價位觸碰分析**")
+            touches = analyze_price_touches(df_display, data["levels"])
+            if touches:
+                df_touches = pd.DataFrame(touches)
+                st.table(df_touches.style.set_properties(**{'text-align': 'center'}))
+            else:
+                st.info("無明顯觸碰價位")
+
+# 歷史訊號
 if st.session_state.signal_history:
     st.subheader("歷史訊號（最近20筆）")
     for s in reversed(st.session_state.signal_history):
