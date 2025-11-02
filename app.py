@@ -28,7 +28,7 @@ interval_label = st.sidebar.selectbox("K線週期", options=list(interval_option
 interval = interval_options[interval_label]
 
 period_options = {"1天": "1d", "5天": "5d", "10天": "10d", "1個月": "1mo", "3個月": "3mo", "1年": "1y"}
-period_label = st.sidebar.selectbox("資料範圍", options=list(period_options.keys()), index=2)
+period_label = st.sidebar.selectbox("資料範圍", options=list(period_options.keys()), index=1)
 period = period_options[period_label]
 
 lookback = st.sidebar.slider("觀察根數", 20, 300, 100, 10)
