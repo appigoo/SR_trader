@@ -28,7 +28,7 @@ interval_label = st.sidebar.selectbox("K線週期", options=list(interval_option
 interval = interval_options[interval_label]
 
 period_options = {"1天": "1d", "5天": "5d", "10天": "10d", "1個月": "1mo", "3個月": "3mo", "1年": "1y"}
-period_label = st.sidebar.selectbox("資料範圍", options=list(period_options.keys()), index=2)
+period_label = st.sidebar.selectbox("資料範圍", options=list(period_options.keys()), index=1)
 period = period_options[period_label]
 
 lookback = st.sidebar.slider("觀察根數", 20, 300, 100, 10)
@@ -74,11 +74,11 @@ def send_telegram_alert(msg: str) -> bool:
         st.warning(f"Telegram 發送失敗: {e}")
         return False
 
-# ==================== 測試按鈕（使用正確 emoji） ====================
+# ==================== 測試按鈕（純文字提示，零錯誤） ====================
 st.sidebar.markdown("### Telegram 通知測試")
 if st.sidebar.button("發送測試訊息", type="secondary", use_container_width=True):
     if not telegram_ready:
-        st.toast("Telegram 設定錯誤", icon="Cross")
+        st.error("Telegram 設定錯誤，請檢查 secrets.toml")
     else:
         test_msg = (
             "<b>Telegram 通知測試成功！</b>\n"
@@ -87,9 +87,9 @@ if st.sidebar.button("發送測試訊息", type="secondary", use_container_width
         )
         with st.spinner("發送中…"):
             if send_telegram_alert(test_msg):
-                st.toast("測試訊息已發送！請檢查 Telegram", icon="Checkmark")
+                st.success("Telegram 發送成功！請檢查您的 Telegram")
             else:
-                st.toast("發送失敗，請檢查設定", icon="Cross")
+                st.error("Telegram 發送失敗，請檢查 Token / Chat ID")
 
 # ==================== 聲音提醒 ====================
 def play_alert_sound():
@@ -319,7 +319,8 @@ for symbol in symbols:
             })
             if len(st.session_state.signal_history) > 20:
                 st.session_state.signal_history.pop(0)
-            send_telegram_alert(data["signal"])
+            if send_telegram_alert(data["signal"]):
+                st.success("Telegram 訊號已發送")
             play_alert_sound()
     else:
         st.markdown(f"### {symbol}")
