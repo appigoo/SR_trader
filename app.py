@@ -7,16 +7,17 @@ import plotly.graph_objects as go
 import requests
 import time
 from datetime import datetime
-from typing import Optional, List, Dict
+from typing import Optional, List
 
 # ==================== 初始化 ====================
 st.set_page_config(page_title="多股票即時監控面板", layout="wide")
 st.title("多股票支撐/阻力突破監控面板")
 
 # session_state
-for key in ["last_update", "last_signal_keys", "signal_history"]:
+for key in ["last_update", "last_signal_keys", "signal_history", "data_cache"]:
     if key not in st.session_state:
-        st.session_state[key] = 0 if key == "last_update" else {} if key == "last_signal_keys" else []
+        st.session_state[key] = (0 if key == "last_update" else 
+                                {} if key in ["last_signal_keys", "data_cache"] else [])
 
 # ==================== 側邊欄選項 ====================
 symbols_input = st.sidebar.text_input("股票代號（逗號分隔）", "AAPL, TSLA, NVDA")
@@ -27,7 +28,7 @@ interval_label = st.sidebar.selectbox("K線週期", options=list(interval_option
 interval = interval_options[interval_label]
 
 period_options = {"1天": "1d", "5天": "5d", "10天": "10d", "1個月": "1mo", "3個月": "3mo", "1年": "1y"}
-period_label = st.sidebar.selectbox("資料範圍", options=list(period_options.keys()), index=2)
+period_label = st.sidebar.selectbox("資料範圍", options=list(period_options.keys()), index=1)
 period = period_options[period_label]
 
 lookback = st.sidebar.slider("觀察根數", 20, 300, 100, 10)
@@ -67,14 +68,32 @@ def play_alert_sound():
         </audio>
         """, unsafe_allow_html=True)
 
-# ==================== 價位觸碰分析（完全獨立） ====================
+# ==================== 手動快取（每檔獨立） ====================
+def fetch_data_manual(symbol: str, interval: str, period: str) -> Optional[pd.DataFrame]:
+    cache_key = f"{symbol}_{interval}_{period}"
+    if cache_key in st.session_state.data_cache:
+        return st.session_state.data_cache[cache_key]
+    
+    try:
+        df = yf.download(symbol, period=period, interval=interval,
+                         progress=False, auto_adjust=True, threads=True)
+        if df.empty or df.isna().all().all():
+            return None
+        df = df[~df.index.duplicated(keep='last')].copy()
+        df = df.dropna(how='all')
+        st.session_state.data_cache[cache_key] = df
+        return df
+    except Exception as e:
+        st.warning(f"{symbol} 下載失敗: {e}")
+        return None
+
+# ==================== 價位觸碰分析 ====================
 def analyze_price_touches(df: pd.DataFrame, levels: List[float], tolerance: float = 0.005) -> List[dict]:
     touches = []
     high, low = df["High"], df["Low"]
     for level in levels:
         if not np.isfinite(level):
             continue
-        # 強制 int，避免 Series 問題
         sup_touch = int(((low <= level * (1 + tolerance)) & (low >= level * (1 - tolerance))).sum())
         res_touch = int(((high >= level * (1 - tolerance)) & (high <= level * (1 + tolerance))).sum())
         total_touch = sup_touch + res_touch
@@ -93,9 +112,9 @@ def analyze_price_touches(df: pd.DataFrame, levels: List[float], tolerance: floa
         })
     return sorted(touches, key=lambda x: float(x["價位"][1:]), reverse=True)
 
-# ==================== 支撐阻力（用完整資料） ====================
+# ==================== 支撐阻力 ====================
 def find_support_resistance_fractal(df_full: pd.DataFrame, window: int = 5, min_touches: int = 2):
-    df = df_full.iloc[:-1]  # 分析用
+    df = df_full.iloc[:-1]
     if len(df) < window * 2 + 1:
         try:
             low_min = float(df_full["Low"].min(skipna=True).item())
@@ -125,7 +144,6 @@ def find_support_resistance_fractal(df_full: pd.DataFrame, window: int = 5, min_
         if np.isclose(low.iloc[i], min_low, atol=1e-6):
             sup_pts.append(min_low)
 
-    # 聚類
     def cluster_points(points, tol=0.005):
         if not points: return []
         points = sorted(points)
@@ -187,28 +205,12 @@ def detect_breakout(df_full: pd.DataFrame, support: float, resistance: float,
         return msg, key
     return None, None
 
-# ==================== 資料快取（強制獨立） ====================
-@st.cache_data(ttl=60, show_spinner=False)
-def fetch_data(_symbol: str, _interval: str, _period: str) -> Optional[pd.DataFrame]:
-    try:
-        df = yf.download(_symbol, period=_period, interval=_interval,
-                         progress=False, auto_adjust=True, threads=True)
-        if df.empty or df.isna().all().all():
-            return None
-        df = df[~df.index.duplicated(keep='last')].copy()
-        df = df.dropna(how='all')
-        return df
-    except Exception as e:
-        st.warning(f"{_symbol} 下載失敗: {e}")
-        return None
-
 # ==================== 主程式（每檔獨立） ====================
 def process_symbol(symbol: str):
-    df_full = fetch_data(symbol, interval, period)
+    df_full = fetch_data_manual(symbol, interval, period)
     if df_full is None or len(df_full) < 15:
         return None, None, None, None, None, None, [], None
 
-    # 分析用：不含最新一根
     df = df_full.iloc[:-1]
     if len(df) < 10:
         return None, None, None, None, None, None, [], None
@@ -275,7 +277,7 @@ with st.spinner("下載資料與分析中…"):
         results[symbol] = {
             "fig": fig, "price": price, "support": support,
             "resistance": resistance, "signal": signal, "key": key,
-            "levels": levels, "df_full": df_full  # 完整資料
+            "levels": levels, "df_full": df_full
         }
         if signal:
             breakout_signals.append((symbol, signal, key))
@@ -310,7 +312,6 @@ for symbol in symbols:
     with c2: st.metric("支撐", f"{data['support']:.2f}", f"{data['price']-data['support']:+.2f}")
     with c3: st.metric("阻力", f"{data['resistance']:.2f}", f"{data['resistance']-data['price']:+.2f}")
 
-    # 每檔獨立觸碰分析
     if show_touches and data["levels"] and data["df_full"] is not None:
         touches = analyze_price_touches(data["df_full"], data["levels"])
         if touches:
