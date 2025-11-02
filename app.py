@@ -28,7 +28,7 @@ interval_label = st.sidebar.selectbox("K線週期", options=list(interval_option
 interval = interval_options[interval_label]
 
 period_options = {"1天": "1d", "5天": "5d", "10天": "10d", "1個月": "1mo", "3個月": "3mo", "1年": "1y"}
-period_label = st.sidebar.selectbox("資料範圍", options=list(period_options.keys()), index=1)
+period_label = st.sidebar.selectbox("資料範圍", options=list(period_options.keys()), index=2)
 period = period_options[period_label]
 
 lookback = st.sidebar.slider("觀察根數", 20, 300, 100, 10)
@@ -42,21 +42,53 @@ show_touches = st.sidebar.checkbox("顯示價位觸碰分析", True)
 st.sidebar.markdown("---")
 st.sidebar.caption(f"**K線**：{interval_label} | **範圍**：{period_label}")
 
-# ==================== Telegram ====================
+# ==================== Telegram 設定與測試 ====================
 try:
     BOT_TOKEN = st.secrets["telegram"]["BOT_TOKEN"]
     CHAT_ID = st.secrets["telegram"]["CHAT_ID"]
+    telegram_ready = True
 except Exception:
     BOT_TOKEN = CHAT_ID = None
+    telegram_ready = False
+    st.sidebar.error("Telegram 設定錯誤，請檢查 secrets.toml")
 
+# --- 測試按鈕 ---
+st.sidebar.markdown("### Telegram 通知測試")
+if st.sidebar.button("發送測試訊息", type="secondary", use_container_width=True):
+    if not telegram_ready:
+        st.toast("Telegram 設定錯誤", icon="error")
+    else:
+        test_msg = (
+            "<b>Telegram 通知測試成功！</b>\n"
+            "這是一條來自 <i>多股票監控系統</i> 的測試訊息。\n"
+            "時間: <code>" + datetime.now().strftime("%H:%M:%S") + "</code>"
+        )
+        with st.spinner("發送中…"):
+            if send_telegram_alert(test_msg):
+                st.toast("測試訊息已發送！請檢查 Telegram", icon="success")
+            else:
+                st.toast("發送失敗，請檢查設定", icon="error")
+
+# ==================== Telegram 發送函數 ====================
 def send_telegram_alert(msg: str) -> bool:
     if not (BOT_TOKEN and CHAT_ID):
         return False
     try:
         url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-        requests.get(url, params={"chat_id": CHAT_ID, "text": msg, "parse_mode": "HTML"}, timeout=10)
-        return True
-    except:
+        payload = {
+            "chat_id": CHAT_ID,
+            "text": msg,
+            "parse_mode": "HTML",
+            "disable_web_page_preview": True
+        }
+        response = requests.get(url, params=payload, timeout=10)
+        if response.status_code == 200 and response.json().get("ok"):
+            return True
+        else:
+            st.warning(f"Telegram API 錯誤: {response.json()}")
+            return False
+    except Exception as e:
+        st.warning(f"Telegram 發送失敗: {e}")
         return False
 
 # ==================== 聲音提醒 ====================
@@ -68,12 +100,11 @@ def play_alert_sound():
         </audio>
         """, unsafe_allow_html=True)
 
-# ==================== 手動快取（每檔獨立） ====================
+# ==================== 手動快取 ====================
 def fetch_data_manual(symbol: str, interval: str, period: str) -> Optional[pd.DataFrame]:
     cache_key = f"{symbol}_{interval}_{period}"
     if cache_key in st.session_state.data_cache:
         return st.session_state.data_cache[cache_key]
-    
     try:
         df = yf.download(symbol, period=period, interval=interval,
                          progress=False, auto_adjust=True, threads=True)
@@ -122,10 +153,8 @@ def find_support_resistance_fractal(df_full: pd.DataFrame, window: int = 5, min_
         except:
             low_min = high_max = 0.0
         return low_min, high_max, []
-    
     high, low = df["High"], df["Low"]
     res_pts, sup_pts = [], []
-
     for i in range(window, len(df) - window):
         sl = slice(i - window, i + window + 1)
         segment_high = high.iloc[sl]
@@ -143,7 +172,6 @@ def find_support_resistance_fractal(df_full: pd.DataFrame, window: int = 5, min_
             res_pts.append(max_high)
         if np.isclose(low.iloc[i], min_low, atol=1e-6):
             sup_pts.append(min_low)
-
     def cluster_points(points, tol=0.005):
         if not points: return []
         points = sorted(points)
@@ -159,18 +187,14 @@ def find_support_resistance_fractal(df_full: pd.DataFrame, window: int = 5, min_
         if len(current) >= min_touches:
             clusters.append(np.mean(current))
         return clusters
-
     res_lv = cluster_points(res_pts)
     sup_lv = cluster_points(sup_pts)
-
     try:
         cur = float(df_full["Close"].iloc[-1].item())
     except:
         cur = 0.0
-
     resistance = max(res_lv, key=lambda x: (-abs(x - cur), x)) if res_lv else float(df_full["High"].max(skipna=True).item())
     support = min(sup_lv, key=lambda x: (-abs(x - cur), -x)) if sup_lv else float(df_full["Low"].min(skipna=True).item())
-
     all_levels = list(set(res_lv + sup_lv))
     return support, resistance, all_levels
 
@@ -205,21 +229,18 @@ def detect_breakout(df_full: pd.DataFrame, support: float, resistance: float,
         return msg, key
     return None, None
 
-# ==================== 主程式（每檔獨立） ====================
+# ==================== 主程式 ====================
 def process_symbol(symbol: str):
     df_full = fetch_data_manual(symbol, interval, period)
     if df_full is None or len(df_full) < 15:
         return None, None, None, None, None, None, [], None
-
     df = df_full.iloc[:-1]
     if len(df) < 10:
         return None, None, None, None, None, None, [], None
-
     window = max(5, lookback // 15)
     support, resistance, all_levels = find_support_resistance_fractal(df_full, window=window, min_touches=2)
     signal, signal_key = detect_breakout(df_full, support, resistance, buffer_pct,
                                          use_volume_filter, 1.5, lookback, symbol)
-
     fig = go.Figure()
     fig.add_trace(go.Candlestick(x=df_full.index, open=df_full["Open"], high=df_full["High"],
                                  low=df_full["Low"], close=df_full["Close"], name="K線"))
@@ -236,12 +257,10 @@ def process_symbol(symbol: str):
                         marker=dict(color="yellow", size=12, symbol="star"), name="突破點")
     fig.update_layout(title=f"{symbol}", height=400, margin=dict(l=20, r=20, t=40, b=20),
                       xaxis_rangeslider_visible=False, yaxis=dict(title="價格"), yaxis2=dict(title="成交量", overlaying="y", side="right"))
-
     try:
         current_price = float(df_full["Close"].iloc[-1].item())
     except:
         current_price = 0.0
-
     return fig, current_price, support, resistance, signal, signal_key, all_levels, df_full
 
 # ==================== 自動更新 ====================
