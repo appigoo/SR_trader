@@ -28,7 +28,7 @@ interval_label = st.sidebar.selectbox("K線週期", options=list(interval_option
 interval = interval_options[interval_label]
 
 period_options = {"1天": "1d", "5天": "5d", "10天": "10d", "1個月": "1mo", "3個月": "3mo", "1年": "1y"}
-period_label = st.sidebar.selectbox("資料範圍", options=list(period_options.keys()), index=1)
+period_label = st.sidebar.selectbox("資料範圍", options=list(period_options.keys()), index=2)
 period = period_options[period_label]
 
 lookback = st.sidebar.slider("觀察根數", 20, 300, 100, 10)
@@ -74,7 +74,7 @@ def send_telegram_alert(msg: str) -> bool:
         st.warning(f"Telegram 發送失敗: {e}")
         return False
 
-# ==================== 測試按鈕（純文字提示，零錯誤） ====================
+# ==================== 測試按鈕（純文字提示） ====================
 st.sidebar.markdown("### Telegram 通知測試")
 if st.sidebar.button("發送測試訊息", type="secondary", use_container_width=True):
     if not telegram_ready:
@@ -286,12 +286,23 @@ if not symbols:
 
 st.header(f"即時監控中：{', '.join(symbols)} | {interval_label} | {period_label}")
 
-# ==================== 顯示所有股票 ====================
+# ==================== 顯示所有股票（含進度條） ====================
 results = {}
 breakout_signals = []
 
+# 進度條容器
+progress_container = st.container()
+progress_bar = progress_container.progress(0)
+status_text = progress_container.empty()
+
 with st.spinner("下載資料與分析中…"):
-    for symbol in symbols:
+    total_symbols = len(symbols)
+    for idx, symbol in enumerate(symbols):
+        # 更新進度條
+        progress = (idx + 1) / total_symbols
+        progress_bar.progress(progress)
+        status_text.text(f"正在處理：{symbol} ({idx + 1}/{total_symbols})")
+
         fig, price, support, resistance, signal, key, levels, df_full = process_symbol(symbol)
         results[symbol] = {
             "fig": fig, "price": price, "support": support,
@@ -301,6 +312,11 @@ with st.spinner("下載資料與分析中…"):
         if signal:
             breakout_signals.append((symbol, signal, key))
 
+    # 完成後清除進度條
+    progress_bar.empty()
+    status_text.empty()
+
+# ==================== 顯示結果 ====================
 for symbol in symbols:
     data = results.get(symbol)
     if not data or data["fig"] is None:
