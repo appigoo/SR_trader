@@ -6,6 +6,7 @@ import numpy as np
 import plotly.graph_objects as go
 import requests
 import time
+import math  # 重要：加入 math
 from datetime import datetime
 from typing import Optional
 
@@ -59,10 +60,13 @@ def play_alert_sound():
         </audio>
         """, unsafe_allow_html=True)
 
-# ==================== 支撐阻力（終極防呆） ====================
+# ==================== 支撐阻力（完全防呆） ====================
 def find_support_resistance_fractal(df: pd.DataFrame, window: int = 5, min_touches: int = 2):
     if len(df) < window * 2 + 1:
-        return float(df["Low"].max()), float(df["High"].max())
+        low_min = df["Low"].min(skipna=True)
+        high_max = df["High"].max(skipna=True)
+        return (float(low_min) if not pd.isna(low_min) else 0.0,
+                float(high_max) if not pd.isna(high_max) else 0.0)
 
     high, low = df["High"], df["Low"]
     res_pts, sup_pts = [], []
@@ -75,12 +79,12 @@ def find_support_resistance_fractal(df: pd.DataFrame, window: int = 5, min_touch
         if segment_high.empty or segment_low.empty:
             continue
 
-        # 安全取值：避免 FutureWarning
         max_high_val = segment_high.max(skipna=True)
         min_low_val = segment_low.min(skipna=True)
 
-        max_high = float(max_high_val) if not pd.isna(max_high_val) else np.nan
-        min_low = float(min_low_val) if not pd.isna(min_low_val) else np.nan
+        # 安全轉 float + 防 NaN
+        max_high = float(max_high_val) if (not pd.isna(max_high_val) and not math.isnan(max_high_val)) else np.nan
+        min_low = float(min_low_val) if (not pd.isna(min_low_val) and not math.isnan(min_low_val)) else np.nan
 
         if not (np.isfinite(max_high) and np.isfinite(min_low)):
             continue
@@ -111,11 +115,15 @@ def find_support_resistance_fractal(df: pd.DataFrame, window: int = 5, min_touch
     sup_lv = cluster_points(sup_pts)
 
     # 安全取最新收盤
-    close_series = df["Close"]
-    cur = float(close_series.iloc[-1]) if len(close_series) > 0 and pd.notna(close_series.iloc[-1]) else 0.0
+    close_last = df["Close"].iloc[-1]
+    cur = float(close_last) if (len(df) > 0 and pd.notna(close_last) and not math.isnan(close_last)) else 0.0
 
-    resistance = max(res_lv, key=lambda x: (-abs(x - cur), x)) if res_lv else float(df["High"].max(skipna=True))
-    support = min(sup_lv, key=lambda x: (-abs(x - cur), -x)) if sup_lv else float(df["Low"].min(skipna=True))
+    # 防空值
+    high_max = float(df["High"].max(skipna=True)) if not pd.isna(df["High"].max(skipna=True)) else cur
+    low_min = float(df["Low"].min(skipna=True)) if not pd.isna(df["Low"].min(skipna=True)) else cur
+
+    resistance = max(res_lv, key=lambda x: (-abs(x - cur), x)) if res_lv else high_max
+    support = min(sup_lv, key=lambda x: (-abs(x - cur), -x)) if sup_lv else low_min
 
     return support, resistance
 
@@ -142,7 +150,6 @@ def detect_breakout(df: pd.DataFrame, support: float, resistance: float,
 
     buffer = max(support, resistance) * buffer_pct
 
-    # 突破阻力
     if (prev2_close <= (resistance - buffer)) and \
        (prev_close <= (resistance - buffer)) and \
        (last_close > resistance) and vol_ok:
@@ -154,7 +161,6 @@ def detect_breakout(df: pd.DataFrame, support: float, resistance: float,
         key = f"{symbol}_UP_{resistance:.2f}"
         return msg, key
 
-    # 跌破支撐
     if (prev2_close >= (support + buffer)) and \
        (prev_close >= (support + buffer)) and \
        (last_close < support) and vol_ok:
