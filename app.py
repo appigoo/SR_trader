@@ -77,21 +77,24 @@ def find_support_resistance_fractal(df: pd.DataFrame, window: int = 5):
 
     res_lv = cluster(res_pts) or [float(high.max())]
     sup_lv = cluster(sup_pts) or [float(low.min())]
-    cur = float(df["Close"].iloc[-1])
+    cur = float(df["Close"].iloc[-1].item())
 
     resistance = max(res_lv, key=lambda x: (-abs(x - cur), x))
     support = min(sup_lv, key=lambda x: (-abs(x - cur), -x))
     return float(support), float(resistance)
 
-# ==================== 突破偵測 ====================
+# ==================== 突破偵測（終極防呆） ====================
 def detect_breakout(df: pd.DataFrame, support: float, resistance: float,
                     buffer_pct: float, use_volume: bool, vol_mult: float, lookback: int):
     if len(df) < 2:
         return None
 
-    # 關鍵：100% 取單一 float 值
+    # 關鍵：三層防護
     try:
-        # 使用 .iloc + .item() 最安全
+        # 1. 確保索引唯一
+        df = df[~df.index.duplicated(keep='last')]
+
+        # 2. 強制取單一 float
         last_close = df["Close"].iloc[-1].item()
         prev_close = df["Close"].iloc[-2].item()
         last_volume = df["Volume"].iloc[-1].item()
@@ -99,7 +102,7 @@ def detect_breakout(df: pd.DataFrame, support: float, resistance: float,
         st.error(f"取值失敗：{e}")
         return None
 
-    # 均量
+    # 3. 均量
     vol_tail = df["Volume"].tail(lookback)
     avg_volume = vol_tail.mean().item() if not vol_tail.empty else last_volume
     if avg_volume == 0:
@@ -107,16 +110,18 @@ def detect_breakout(df: pd.DataFrame, support: float, resistance: float,
 
     buffer = max(support, resistance) * buffer_pct
 
-    # 明確布林判斷
-    breakout_up = (prev_close <= resistance - buffer) and (last_close > resistance)
-    breakout_down = (prev_close >= support + buffer) and (last_close < support)
-    volume_ok = (not use_volume) or (last_volume > avg_volume * vol_mult)
+    # 明確分開判斷，避免 Series 混用
+    cond1 = prev_close <= (resistance - buffer)
+    cond2 = last_close > resistance
+    cond3 = prev_close >= (support + buffer)
+    cond4 = last_close < support
+    vol_ok = (not use_volume) or (last_volume > avg_volume * vol_mult)
 
     ratio = last_volume / avg_volume
 
-    if breakout_up and volume_ok:
+    if cond1 and cond2 and vol_ok:
         return f"突破阻力！\n股票: <b>{symbol}</b>\n現價: <b>{last_close:.2f}</b>\n阻力: {resistance:.2f}\n成交量: {last_volume/1e6:.1f}M ({ratio:.1f}x)"
-    if breakout_down and volume_ok:
+    if cond3 and cond4 and vol_ok:
         return f"跌破支撐！\n股票: <b>{symbol}</b>\n現價: <b>{last_close:.2f}</b>\n支撐: {support:.2f}\n成交量: {last_volume/1e6:.1f}M ({ratio:.1f}x)"
     return None
 
@@ -134,7 +139,7 @@ def load_and_update_data():
 
             # 關鍵：清除重複索引
             df = df[~df.index.duplicated(keep='last')].copy()
-            df.dropna(inplace=True)
+            df = df.dropna()
 
             if len(df) < 10:
                 st.warning("資料不足")
@@ -158,9 +163,9 @@ def load_and_update_data():
 
         # 資訊
         c1, c2, c3 = st.columns(3)
-        with c1: st.metric("現價", f"{df['Close'].iloc[-1]:.2f}")
-        with c2: st.metric("支撐", f"{support:.2f}", f"{df['Close'].iloc[-1]-support:+.2f}")
-        with c3: st.metric("阻力", f"{resistance:.2f}", f"{resistance-df['Close'].iloc[-1]:+.2f}")
+        with c1: st.metric("現價", f"{df['Close'].iloc[-1].item():.2f}")
+        with c2: st.metric("支撐", f"{support:.2f}", f"{df['Close'].iloc[-1].item()-support:+.2f}")
+        with c3: st.metric("阻力", f"{resistance:.2f}", f"{resistance-df['Close'].iloc[-1].item():+.2f}")
 
         # 訊號
         if signal:
