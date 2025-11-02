@@ -6,30 +6,59 @@ import numpy as np
 import plotly.graph_objects as go
 import requests
 import time
-import math
 from datetime import datetime
 from typing import Optional
 
 # ==================== 初始化 ====================
-st.set_page_config(page_title="多股票突破監控", layout="wide")
-st.title("多股票支撐 / 阻力突破監控系統")
+st.set_page_config(page_title="專業多股票突破監控", layout="wide")
+st.title("專業多股票支撐 / 阻力突破監控系統")
 
 # session_state
 for key in ["last_update", "last_signal_keys", "signal_history"]:
     if key not in st.session_state:
         st.session_state[key] = 0 if key == "last_update" else {} if key == "last_signal_keys" else []
 
-# ==================== 側邊欄 ====================
+# ==================== 側邊欄選項 ====================
 symbols_input = st.sidebar.text_input("股票代號（逗號分隔）", "AAPL, TSLA, NVDA")
 symbols = [s.strip().upper() for s in symbols_input.split(",") if s.strip()]
 
-interval = st.sidebar.selectbox("時間週期", ["1m", "5m", "15m", "30m", "1h", "1d"], index=1)
-lookback = st.sidebar.slider("觀察根數", 20, 300, 100, 10)
+# --- 自訂 K 線週期 ---
+interval_options = {
+    "1分鐘": "1m", "2分鐘": "2m", "3分鐘": "3m", "5分鐘": "5m", "10分鐘": "10m",
+    "15分鐘": "15m", "30分鐘": "30m", "1小時": "60m", "日線": "1d", "週線": "1wk", "月線": "1mo"
+}
+interval_label = st.sidebar.selectbox(
+    "K線週期",
+    options=list(interval_options.keys()),
+    index=3  # 預設 5m
+)
+interval = interval_options[interval_label]
+
+# --- 自訂資料範圍 ---
+period_options = {
+    "1天": "1d", "5天": "5d", "10天": "10d",
+    "1個月": "1mo", "3個月": "3mo", "6個月": "6mo",
+    "1年": "1y", "2年": "2y", "5年": "5y", "10年": "10y",
+    "今年至今": "ytd", "全部": "max"
+}
+period_label = st.sidebar.selectbox(
+    "資料範圍",
+    options=list(period_options.keys()),
+    index=2  # 預設 10d
+)
+period = period_options[period_label]
+
+# --- 其他參數 ---
+lookback = st.sidebar.slider("觀察根數", 20, 500, 100, 10)
 update_freq = st.sidebar.selectbox("更新頻率", ["30秒", "60秒", "3分鐘", "5分鐘"], index=1)
 auto_update = st.sidebar.checkbox("自動更新", True)
 use_volume_filter = st.sidebar.checkbox("成交量確認 (>1.5x)", True)
-buffer_pct = st.sidebar.slider("緩衝區 (%)", 0.05, 1.0, 0.1, 0.05) / 100
+buffer_pct = st.sidebar.slider("緩衝區 (%)", 0.01, 2.0, 0.1, 0.01) / 100
 sound_alert = st.sidebar.checkbox("聲音提醒", True)
+
+# --- 說明 ---
+st.sidebar.markdown("---")
+st.sidebar.caption(f"**K線**：{interval_label} | **範圍**：{period_label}")
 
 # ==================== Telegram ====================
 try:
@@ -60,7 +89,7 @@ def play_alert_sound():
         </audio>
         """, unsafe_allow_html=True)
 
-# ==================== 支撐阻力（終極安全版） ====================
+# ==================== 支撐阻力 ====================
 def find_support_resistance_fractal(df: pd.DataFrame, window: int = 5, min_touches: int = 2):
     if len(df) < window * 2 + 1:
         low_min = df["Low"].min(skipna=True)
@@ -82,7 +111,6 @@ def find_support_resistance_fractal(df: pd.DataFrame, window: int = 5, min_touch
         max_high_val = segment_high.max(skipna=True)
         min_low_val = segment_low.min(skipna=True)
 
-        # 關鍵：.item() 強制取純量
         max_high = float(max_high_val.item()) if pd.notna(max_high_val) else np.nan
         min_low = float(min_low_val.item()) if pd.notna(min_low_val) else np.nan
 
@@ -95,8 +123,7 @@ def find_support_resistance_fractal(df: pd.DataFrame, window: int = 5, min_touch
             sup_pts.append((i, min_low))
 
     def cluster_points(points, tol=0.005):
-        if not points:
-            return []
+        if not points: return []
         points = sorted(points, key=lambda x: x[1])
         clusters = []
         current = [points[0]]
@@ -114,11 +141,9 @@ def find_support_resistance_fractal(df: pd.DataFrame, window: int = 5, min_touch
     res_lv = cluster_points(res_pts)
     sup_lv = cluster_points(sup_pts)
 
-    # 安全取最新收盤
     close_last = df["Close"].iloc[-1]
     cur = float(close_last.item()) if pd.notna(close_last) else 0.0
 
-    # 防空值
     high_max = float(df["High"].max(skipna=True).item()) if pd.notna(df["High"].max(skipna=True)) else cur
     low_min = float(df["Low"].min(skipna=True).item()) if pd.notna(df["Low"].min(skipna=True)) else cur
 
@@ -172,16 +197,11 @@ def detect_breakout(df: pd.DataFrame, support: float, resistance: float,
 
     return None, None
 
-# ==================== 資料快取 ====================
+# ==================== 資料快取（自動對應 period） ====================
 @st.cache_data(ttl=60, show_spinner=False)
-def fetch_data(_symbol: str, _interval: str) -> Optional[pd.DataFrame]:
-    period_map = {
-        "1m": "2d", "5m": "5d", "15m": "10d", "30m": "20d",
-        "1h": "1mo", "1d": "3mo"
-    }
-    period = period_map.get(_interval, "5d")
+def fetch_data(_symbol: str, _interval: str, _period: str) -> Optional[pd.DataFrame]:
     try:
-        df = yf.download(_symbol, period=period, interval=_interval,
+        df = yf.download(_symbol, period=_period, interval=_interval,
                          progress=False, auto_adjust=True, threads=True)
         if df.empty or df.isna().all().all():
             return None
@@ -194,7 +214,7 @@ def fetch_data(_symbol: str, _interval: str) -> Optional[pd.DataFrame]:
 
 # ==================== 主程式 ====================
 def process_symbol(symbol: str):
-    df = fetch_data(symbol, interval)
+    df = fetch_data(symbol, interval, period)
     if df is None or len(df) < 15:
         return None, None, None, None, None, None
 
@@ -228,7 +248,7 @@ def process_symbol(symbol: str):
                         name="突破點")
 
     fig.update_layout(
-        title=f"{symbol} {interval}",
+        title=f"{symbol} {interval_label} ({period_label})",
         height=600, xaxis_rangeslider_visible=False,
         yaxis=dict(title="價格"), yaxis2=dict(title="成交量", overlaying="y", side="right")
     )
@@ -257,7 +277,7 @@ if not symbols:
     st.warning("請輸入至少一檔股票代號")
     st.stop()
 
-st.header(f"監控中：{', '.join(symbols)}")
+st.header(f"監控中：{', '.join(symbols)} | {interval_label} | {period_label}")
 
 breakout_signals = []
 results = {}
