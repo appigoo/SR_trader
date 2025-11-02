@@ -35,7 +35,7 @@ period_options = {
     "1年": "1y", "2年": "2y", "5年": "5y", "10年": "10y",
     "今年至今": "ytd", "全部": "max"
 }
-period_label = st.sidebar.selectbox("資料範圍", options=list(period_options.keys()), index=1)
+period_label = st.sidebar.selectbox("資料範圍", options=list(period_options.keys()), index=2)
 period = period_options[period_label]
 
 lookback = st.sidebar.slider("觀察根數", 20, 500, 100, 10)
@@ -78,7 +78,7 @@ def play_alert_sound():
         </audio>
         """, unsafe_allow_html=True)
 
-# ==================== 價位觸碰分析（終極安全版） ====================
+# ==================== 價位觸碰分析 ====================
 def analyze_price_touches(df: pd.DataFrame, levels: List[float], tolerance: float = 0.005) -> List[dict]:
     touches = []
     high, low = df["High"], df["Low"]
@@ -86,7 +86,6 @@ def analyze_price_touches(df: pd.DataFrame, levels: List[float], tolerance: floa
         if not np.isfinite(level):
             continue
 
-        # 強制轉 int，避免 Series 問題
         sup_touch = int(((low <= level * (1 + tolerance)) & (low >= level * (1 - tolerance))).sum())
         res_touch = int(((high >= level * (1 - tolerance)) & (high <= level * (1 + tolerance))).sum())
         total_touch = sup_touch + res_touch
@@ -228,9 +227,13 @@ def detect_breakout(df: pd.DataFrame, support: float, resistance: float,
 
     return None, None
 
-# ==================== 資料快取 ====================
+# ==================== 資料快取（每檔股票獨立） ====================
 @st.cache_data(ttl=60, show_spinner=False)
 def fetch_data(_symbol: str, _interval: str, _period: str) -> Optional[pd.DataFrame]:
+    cache_key = f"data_{_symbol}_{_interval}_{_period}"
+    if cache_key in st.session_state:
+        return st.session_state[cache_key]
+    
     try:
         df = yf.download(_symbol, period=_period, interval=_interval,
                          progress=False, auto_adjust=True, threads=True)
@@ -238,6 +241,7 @@ def fetch_data(_symbol: str, _interval: str, _period: str) -> Optional[pd.DataFr
             return None
         df = df[~df.index.duplicated(keep='last')].copy()
         df = df.dropna(how='all')
+        st.session_state[cache_key] = df
         return df
     except Exception as e:
         st.warning(f"{_symbol} 下載失敗: {e}")
@@ -371,7 +375,6 @@ for tab, symbol in zip(tabs, symbols):
         else:
             st.info("無訊號")
 
-        # === 交易建議表 ===
         if show_touches and data["levels"] and data["df_display"] is not None:
             st.subheader(f"**{symbol} 價位觸碰分析**")
             touches = analyze_price_touches(data["df_display"], data["levels"])
@@ -381,7 +384,6 @@ for tab, symbol in zip(tabs, symbols):
             else:
                 st.info("無明顯觸碰價位")
 
-# 歷史訊號
 if st.session_state.signal_history:
     st.subheader("歷史訊號（最近20筆）")
     for s in reversed(st.session_state.signal_history):
