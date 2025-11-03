@@ -466,17 +466,19 @@ for symbol in symbols:
     if all_signals:
         st.markdown(f"### **{symbol}**")
         for msg, key in zip(all_signals, all_keys):
-            st.success(msg)
+            # 確保 msg 是字符串
+            msg_str = str(msg) if isinstance(msg, (pd.Series, np.ndarray)) else msg
+            st.success(msg_str)
             if st.session_state.last_signal_keys.get(key) != key:
                 st.session_state.last_signal_keys[key] = key
                 st.session_state.signal_history.append({
                     "time": datetime.now().strftime("%H:%M:%S"),
                     "symbol": symbol,
-                    "signal": msg
+                    "signal": msg_str
                 })
                 if len(st.session_state.signal_history) > 20:
                     st.session_state.signal_history.pop(0)
-                if send_telegram_alert(msg):
+                if send_telegram_alert(msg_str):
                     st.success("Telegram 訊號已發送")
                 play_alert_sound()
     else:
