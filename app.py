@@ -7,7 +7,7 @@ import plotly.graph_objects as go
 import requests
 import time
 from datetime import datetime
-from typing import Optional, List, Tuple
+from typing import Optional, List
 
 # ==================== 初始化 ====================
 st.set_page_config(page_title="多股票即時監控面板", layout="wide")
@@ -38,24 +38,6 @@ use_volume_filter = st.sidebar.checkbox("成交量確認 (>1.5x)", True)
 buffer_pct = st.sidebar.slider("緩衝區 (%)", 0.01, 1.0, 0.1, 0.01) / 100
 sound_alert = st.sidebar.checkbox("聲音提醒", True)
 show_touches = st.sidebar.checkbox("顯示價位觸碰分析", True)
-
-# ==================== 自定義支撐/阻力 & 成交量突破通知 ====================
-st.sidebar.markdown("### 自定義監控")
-custom_levels_input = st.sidebar.text_input(
-    "自定義價位（逗號分隔）", 
-    "150.0, 200.0", 
-    help="輸入數字即可，例如：150.5, 200.0"
-)
-try:
-    custom_levels = [float(x.strip()) for x in custom_levels_input.split(",") if x.strip()]
-except:
-    custom_levels = []
-    st.sidebar.warning("自定義價位格式錯誤")
-
-volume_alert_mult = st.sidebar.slider(
-    "成交量突破提醒 (倍數)", 1.0, 5.0, 2.0, 0.1,
-    help="當最新成交量 > 平均成交量 × 此倍數時提醒"
-)
 
 st.sidebar.markdown("---")
 st.sidebar.caption(f"**K線**：{interval_label} | **範圍**：{period_label}")
@@ -92,7 +74,7 @@ def send_telegram_alert(msg: str) -> bool:
         st.warning(f"Telegram 發送失敗: {e}")
         return False
 
-# ==================== 測試按鈕 ====================
+# ==================== 測試按鈕（純文字提示） ====================
 st.sidebar.markdown("### Telegram 通知測試")
 if st.sidebar.button("發送測試訊息", type="secondary", use_container_width=True):
     if not telegram_ready:
@@ -166,8 +148,8 @@ def find_support_resistance_fractal(df_full: pd.DataFrame, window: int = 5, min_
     df = df_full.iloc[:-1]
     if len(df) < window * 2 + 1:
         try:
-            low_min = float(df_full["Low"].min(skipna=True))
-            high_max = float(df_full["High"].max(skipna=True))
+            low_min = float(df_full["Low"].min(skipna=True).item())
+            high_max = float(df_full["High"].max(skipna=True).item())
         except:
             low_min = high_max = 0.0
         return low_min, high_max, []
@@ -180,8 +162,8 @@ def find_support_resistance_fractal(df_full: pd.DataFrame, window: int = 5, min_
         if segment_high.empty or segment_low.empty:
             continue
         try:
-            max_high = float(segment_high.max(skipna=True))
-            min_low = float(segment_low.min(skipna=True))
+            max_high = float(segment_high.max(skipna=True).item())
+            min_low = float(segment_low.min(skipna=True).item())
         except:
             continue
         if not (np.isfinite(max_high) and np.isfinite(min_low)):
@@ -208,11 +190,11 @@ def find_support_resistance_fractal(df_full: pd.DataFrame, window: int = 5, min_
     res_lv = cluster_points(res_pts)
     sup_lv = cluster_points(sup_pts)
     try:
-        cur = float(df_full["Close"].iloc[-1])
+        cur = float(df_full["Close"].iloc[-1].item())
     except:
         cur = 0.0
-    resistance = max(res_lv, key=lambda x: (-abs(x - cur), x)) if res_lv else float(df_full["High"].max(skipna=True))
-    support = min(sup_lv, key=lambda x: (-abs(x - cur), -x)) if sup_lv else float(df_full["Low"].min(skipna=True))
+    resistance = max(res_lv, key=lambda x: (-abs(x - cur), x)) if res_lv else float(df_full["High"].max(skipna=True).item())
+    support = min(sup_lv, key=lambda x: (-abs(x - cur), -x)) if sup_lv else float(df_full["Low"].min(skipna=True).item())
     all_levels = list(set(res_lv + sup_lv))
     return support, resistance, all_levels
 
@@ -223,15 +205,15 @@ def detect_breakout(df_full: pd.DataFrame, support: float, resistance: float,
     if len(df) < 4:
         return None, None
     try:
-        last_close = float(df["Close"].iloc[-1])
-        prev_close = float(df["Close"].iloc[-2])
-        prev2_close = float(df["Close"].iloc[-3]) if len(df) >= 3 else prev_close
-        last_volume = float(df["Volume"].iloc[-1])
+        last_close = float(df["Close"].iloc[-1].item())
+        prev_close = float(df["Close"].iloc[-2].item())
+        prev2_close = float(df["Close"].iloc[-3].item()) if len(df) >= 3 else prev_close
+        last_volume = float(df["Volume"].iloc[-1].item())
     except:
         return None, None
     vol_tail = df["Volume"].iloc[-(lookback + 1):-1]
     try:
-        avg_volume = float(vol_tail.mean(skipna=True))
+        avg_volume = float(vol_tail.mean(skipna=True).item())
     except:
         avg_volume = 1.0
     vol_ratio = last_volume / avg_volume if avg_volume > 0 else 0
@@ -247,160 +229,39 @@ def detect_breakout(df_full: pd.DataFrame, support: float, resistance: float,
         return msg, key
     return None, None
 
-# ==================== 自定義價位 & 放量突破偵測 ====================
-def detect_custom_breakouts(df_full: pd.DataFrame, custom_levels: List[float], 
-                           volume_alert_mult: float, lookback: int, symbol: str):
-    if len(df_full) < 2:
-        return [], []
-    
-    signals = []
-    try:
-        last_close = float(df_full["Close"].iloc[-1])
-        prev_close = float(df_full["Close"].iloc[-2])
-    except:
-        return [], []
-
-    # 1. 自定義價位突破
-    for level in custom_levels:
-        if not np.isfinite(level):
-            continue
-        if prev_close <= level and last_close > level:
-            msg = f"自定義突破！\n股票: <b>{symbol}</b>\n現價: <b>{last_close:.2f}</b>\n目標價: {level:.2f}"
-            key = f"{symbol}_CUST_UP_{level:.2f}"
-            signals.append((msg, key))
-        elif prev_close >= level and last_close < level:
-            msg = f"自定義跌破！\n股票: <b>{symbol}</b>\n現價: <b>{last_close:.2f}</b>\n目標價: {level:.2f}"
-            key = f"{symbol}_CUST_DN_{level:.2f}"
-            signals.append((msg, key))
-
-    # 2. 放量提醒
-    if len(df_full) > lookback:
-        try:
-            vol_tail = df_full["Volume"].iloc[-(lookback + 1):-1]
-            avg_vol = float(vol_tail.mean())
-            last_vol = float(df_full["Volume"].iloc[-1])
-            if avg_vol > 0 and last_vol > avg_vol * volume_alert_mult:
-                ratio = last_vol / avg_vol
-                msg = f"放量警報！\n股票: <b>{symbol}</b>\n成交量: <b>{last_vol:,.0f}</b>\n放大 <b>{ratio:.2f}x</b>"
-                key = f"{symbol}_VOL_{ratio:.2f}x"
-                signals.append((msg, key))
-        except:
-            pass
-
-    return signals, []
-
 # ==================== 主程式 ====================
 def process_symbol(symbol: str):
     df_full = fetch_data_manual(symbol, interval, period)
     if df_full is None or len(df_full) < 15:
-        return None, None, None, None, None, None, [], None, []
+        return None, None, None, None, None, None, [], None
     df = df_full.iloc[:-1]
     if len(df) < 10:
-        return None, None, None, None, None, None, [], None, []
+        return None, None, None, None, None, None, [], None
     window = max(5, lookback // 15)
     support, resistance, all_levels = find_support_resistance_fractal(df_full, window=window, min_touches=2)
     signal, signal_key = detect_breakout(df_full, support, resistance, buffer_pct,
                                          use_volume_filter, 1.5, lookback, symbol)
-
-    # 圖表繪製（安全版）
     fig = go.Figure()
-
-    # K線
-    fig.add_trace(go.Candlestick(
-        x=df_full.index, open=df_full["Open"], high=df_full["High"],
-        low=df_full["Low"], close=df_full["Close"], name="K線"
-    ))
-
-    # 20期均線
-    df_full['MA20'] = df_full['Close'].rolling(20, min_periods=1).mean()
-    fig.add_trace(go.Scatter(
-        x=df_full.index, y=df_full['MA20'],
-        line=dict(color='orange', width=2), name="MA20"
-    ))
-
-    # 確保 support / resistance 是 float
-    try:
-        support = float(support)
-        resistance = float(resistance)
-    except:
-        support = resistance = 0.0
-
-    # 主要支撐阻力（加粗）
-    fig.add_hline(y=support, line=dict(color="green", width=3, dash="dot"),
-                  annotation_text=f"支撐 {support:.2f}", annotation_position="bottom right")
-    fig.add_hline(y=resistance, line=dict(color="red", width=3, dash="dot"),
-                  annotation_text=f"阻力 {resistance:.2f}", annotation_position="top right")
-
-    # 支撐/阻力色帶（緩衝區）
-    buffer_low  = support * (1 - buffer_pct)
-    buffer_high = support * (1 + buffer_pct)
-    fig.add_hrect(
-        y0=buffer_low, y1=buffer_high,
-        fillcolor="green", opacity=0.15, line_width=0,
-        annotation_text=f"支撐區 {support:.2f}", annotation_position="bottom right"
-    )
-
-    buffer_low_r  = resistance * (1 - buffer_pct)
-    buffer_high_r = resistance * (1 + buffer_pct)
-    fig.add_hrect(
-        y0=buffer_low_r, y1=buffer_high_r,
-        fillcolor="red", opacity=0.15, line_width=0,
-        annotation_text=f"阻力區 {resistance:.2f}", annotation_position="top right"
-    )
-
-    # 其他水平線
+    fig.add_trace(go.Candlestick(x=df_full.index, open=df_full["Open"], high=df_full["High"],
+                                 low=df_full["Low"], close=df_full["Close"], name="K線"))
+    fig.add_hline(y=support, line_dash="dot", line_color="green", annotation_text=f"支撐 {support:.2f}")
+    fig.add_hline(y=resistance, line_dash="dot", line_color="red", annotation_text=f"阻力 {resistance:.2f}")
     for level in all_levels:
-        if abs(level - support) > 1e-6 and abs(level - resistance) > 1e-6:
-            fig.add_hline(y=level, line=dict(color="gray", width=1, dash="dot"))
-
-    # 成交量（放量高亮） - 修复 Series 问题
-    colors = ['lightblue'] * len(df_full)
-    if len(df_full) > lookback:
-        vol_tail_series = df_full["Volume"].iloc[-(lookback+1):-1]
-        if not vol_tail_series.empty:
-            avg_vol_series = vol_tail_series.mean()
-            avg_vol = float(avg_vol_series) if pd.notna(avg_vol_series) else np.nan
-        else:
-            avg_vol = np.nan
-        
-        last_vol_series = df_full["Volume"].iloc[-1]
-        last_vol = float(last_vol_series) if pd.notna(last_vol_series) else np.nan
-        
-        if pd.notna(avg_vol) and pd.notna(last_vol) and avg_vol > 0:
-            if last_vol > avg_vol * volume_alert_mult:
-                colors[-1] = 'red'
-    fig.add_trace(go.Bar(
-        x=df_full.index, y=df_full["Volume"], name="成交量",
-        marker_color=colors, opacity=0.6, yaxis="y2"
-    ))
-
-    # 突破標記
+        color = "green" if abs(level - support) < 1e-6 else "red" if abs(level - resistance) < 1e-6 else "gray"
+        fig.add_hline(y=level, line_dash="dot", line_color=color, line_width=1)
+    fig.add_trace(go.Bar(x=df_full.index, y=df_full["Volume"], name="成交量", marker_color="lightblue", yaxis="y2"))
     if signal:
         last_time = df_full.index[-1]
         last_close = df_full["Close"].iloc[-1]
         fig.add_scatter(x=[last_time], y=[last_close], mode="markers",
                         marker=dict(color="yellow", size=12, symbol="star"), name="突破點")
-
-    # 更新佈局（安全）
-    fig.update_layout(
-        title=f"{symbol}｜支撐 {support:.2f} → 阻力 {resistance:.2f}",
-        height=500,
-        margin=dict(l=40, r=40, t=60, b=20),
-        xaxis_rangeslider_visible=False,
-        xaxis_title="時間",
-        yaxis=dict(title="價格 (USD)", side="left", showgrid=True),
-        yaxis2=dict(title="成交量", overlaying="y", side="right", showgrid=False),
-        legend=dict(x=0, y=1.1, orientation="h")
-    )
-
+    fig.update_layout(title=f"{symbol}", height=400, margin=dict(l=20, r=20, t=40, b=20),
+                      xaxis_rangeslider_visible=False, yaxis=dict(title="價格"), yaxis2=dict(title="成交量", overlaying="y", side="right"))
     try:
-        current_price = float(df_full["Close"].iloc[-1])
+        current_price = float(df_full["Close"].iloc[-1].item())
     except:
         current_price = 0.0
-
-    custom_signals, _ = detect_custom_breakouts(df_full, custom_levels, volume_alert_mult, lookback, symbol)
-
-    return fig, current_price, support, resistance, signal, signal_key, all_levels, df_full, custom_signals
+    return fig, current_price, support, resistance, signal, signal_key, all_levels, df_full
 
 # ==================== 自動更新 ====================
 interval_map = {"30秒": 30, "60秒": 60, "3分鐘": 180}
@@ -429,6 +290,7 @@ st.header(f"即時監控中：{', '.join(symbols)} | {interval_label} | {period_
 results = {}
 breakout_signals = []
 
+# 進度條容器
 progress_container = st.container()
 progress_bar = progress_container.progress(0)
 status_text = progress_container.empty()
@@ -436,21 +298,21 @@ status_text = progress_container.empty()
 with st.spinner("下載資料與分析中…"):
     total_symbols = len(symbols)
     for idx, symbol in enumerate(symbols):
+        # 更新進度條
         progress = (idx + 1) / total_symbols
         progress_bar.progress(progress)
         status_text.text(f"正在處理：{symbol} ({idx + 1}/{total_symbols})")
 
-        fig, price, support, resistance, signal, key, levels, df_full, custom_signals = process_symbol(symbol)
+        fig, price, support, resistance, signal, key, levels, df_full = process_symbol(symbol)
         results[symbol] = {
             "fig": fig, "price": price, "support": support,
             "resistance": resistance, "signal": signal, "key": key,
-            "levels": levels, "df_full": df_full, "custom_signals": custom_signals
+            "levels": levels, "df_full": df_full
         }
         if signal:
             breakout_signals.append((symbol, signal, key))
-        for msg, ckey in custom_signals:
-            breakout_signals.append((symbol, msg, ckey))
 
+    # 完成後清除進度條
     progress_bar.empty()
     status_text.empty()
 
@@ -461,34 +323,21 @@ for symbol in symbols:
         st.error(f"**{symbol}** 無資料")
         continue
 
-    # 合併所有訊號
-    all_signals = []
-    all_keys = []
     if data["signal"]:
-        all_signals.append(data["signal"])
-        all_keys.append(data["key"])
-    for msg, ckey in data.get("custom_signals", []):
-        all_signals.append(msg)
-        all_keys.append(ckey)
-
-    if all_signals:
         st.markdown(f"### **{symbol}**")
-        for msg, key in zip(all_signals, all_keys):
-            # 確保 msg 是字符串
-            msg_str = str(msg) if isinstance(msg, (pd.Series, np.ndarray)) else msg
-            st.success(msg_str)
-            if st.session_state.last_signal_keys.get(key) != key:
-                st.session_state.last_signal_keys[key] = key
-                st.session_state.signal_history.append({
-                    "time": datetime.now().strftime("%H:%M:%S"),
-                    "symbol": symbol,
-                    "signal": msg_str
-                })
-                if len(st.session_state.signal_history) > 20:
-                    st.session_state.signal_history.pop(0)
-                if send_telegram_alert(msg_str):
-                    st.success("Telegram 訊號已發送")
-                play_alert_sound()
+        st.success(data["signal"])
+        if st.session_state.last_signal_keys.get(key) != key:
+            st.session_state.last_signal_keys[key] = key
+            st.session_state.signal_history.append({
+                "time": datetime.now().strftime("%H:%M:%S"),
+                "symbol": symbol,
+                "signal": data["signal"]
+            })
+            if len(st.session_state.signal_history) > 20:
+                st.session_state.signal_history.pop(0)
+            if send_telegram_alert(data["signal"]):
+                st.success("Telegram 訊號已發送")
+            play_alert_sound()
     else:
         st.markdown(f"### {symbol}")
 
