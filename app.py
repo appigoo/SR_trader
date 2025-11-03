@@ -108,6 +108,14 @@ if st.sidebar.button("發送測試訊息", type="secondary", use_container_width
             else:
                 st.error("Telegram 發送失敗")
 
+# ==================== 清空快取按鈕 ====================
+st.sidebar.markdown("---")
+if st.sidebar.button("清空快取", type="secondary"):
+    st.session_state.data_cache = {}
+    st.session_state.last_signal_keys = {}
+    st.success("快取已清空！")
+    st.rerun()
+
 # ==================== 聲音提醒 ====================
 def play_alert_sound():
     if sound_alert:
@@ -117,26 +125,44 @@ def play_alert_sound():
         </audio>
         """, unsafe_allow_html=True)
 
-# ==================== 手動快取 + 強制轉 float ====================
+# ==================== 手動快取 + 強制 symbol 是字串 + 轉 float ====================
 def fetch_data_manual(symbol: str, interval: str, period: str) -> Optional[pd.DataFrame]:
+    # 強制 symbol 是字串（防 list/tuple/Series）
+    if isinstance(symbol, (list, tuple, pd.Series, np.ndarray)):
+        symbol = str(symbol[0]).strip().upper() if len(symbol) > 0 else ""
+    else:
+        symbol = str(symbol).strip().upper()
+    if not symbol:
+        return None
+
     cache_key = f"{symbol}_{interval}_{period}"
     if cache_key in st.session_state.data_cache:
         return st.session_state.data_cache[cache_key]
+
     try:
-        df = yf.download(symbol, period=period, interval=interval,
-                         progress=False, auto_adjust=True, threads=True)
+        df = yf.download(
+            symbol,
+            period=period,
+            interval=interval,
+            progress=False,
+            auto_adjust=True,
+            threads=True
+        )
         if df.empty or df.isna().all().all():
+            st.warning(f"{symbol} 無資料")
             return None
+
         df = df[~df.index.duplicated(keep='last')].copy()
         df = df.dropna(how='all')
 
-        # 強制轉為 float，避免 Series 問題
+        # 強制轉 float
         for col in ["Open", "High", "Low", "Close", "Volume"]:
             if col in df.columns:
                 df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0.0)
 
         st.session_state.data_cache[cache_key] = df
         return df
+
     except Exception as e:
         st.warning(f"{symbol} 下載失敗: {e}")
         return None
@@ -335,7 +361,7 @@ def process_symbol(symbol: str):
 
     # ==================== 成交量柱 - 安全版 ====================
     vol_colors = ['lightblue'] * len(df_full)
-    has_signal = bool(signal or custom_signal)  # 明確布林值
+    has_signal = bool(signal or custom_signal)
 
     vol_tail = df_full["Volume"].iloc[-(lookback + 1):-1]
     avg_volume = float(vol_tail.mean()) if len(vol_tail) > 0 else 0.0
@@ -355,7 +381,7 @@ def process_symbol(symbol: str):
     # 突破標記
     if has_signal:
         last_time = df_full.index[-1]
-        last_close = float(df_full["Close"].iloc[-1].item())  # 確保 float
+        last_close = float(df_full["Close"].iloc[-1].item())
         fig.add_scatter(
             x=[last_time], y=[last_close],
             mode="markers+text",
