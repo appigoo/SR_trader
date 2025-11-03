@@ -86,11 +86,7 @@ def send_telegram_alert(msg: str) -> bool:
             "disable_web_page_preview": True
         }
         response = requests.get(url, params=payload, timeout=10)
-        if response.status_code == 200 and response.json().get("ok"):
-            return True
-        else:
-            st.warning(f"Telegram API 錯誤: {response.json()}")
-            return False
+        return response.status_code == 200 and response.json().get("ok")
     except Exception as e:
         st.warning(f"Telegram 發送失敗: {e}")
         return False
@@ -110,7 +106,7 @@ if st.sidebar.button("發送測試訊息", type="secondary", use_container_width
             if send_telegram_alert(test_msg):
                 st.success("Telegram 發送成功！請檢查您的 Telegram")
             else:
-                st.error("Telegram 發送失敗，請檢查 Token / Chat ID")
+                st.error("Telegram 發送失敗")
 
 # ==================== 聲音提醒 ====================
 def play_alert_sound():
@@ -121,7 +117,7 @@ def play_alert_sound():
         </audio>
         """, unsafe_allow_html=True)
 
-# ==================== 手動快取 ====================
+# ==================== 手動快取 + 強制轉 float ====================
 def fetch_data_manual(symbol: str, interval: str, period: str) -> Optional[pd.DataFrame]:
     cache_key = f"{symbol}_{interval}_{period}"
     if cache_key in st.session_state.data_cache:
@@ -133,8 +129,12 @@ def fetch_data_manual(symbol: str, interval: str, period: str) -> Optional[pd.Da
             return None
         df = df[~df.index.duplicated(keep='last')].copy()
         df = df.dropna(how='all')
-        # 確保 Volume 是數值
-        df["Volume"] = pd.to_numeric(df["Volume"], errors='coerce').fillna(0)
+
+        # 強制轉為 float，避免 Series 問題
+        for col in ["Open", "High", "Low", "Close", "Volume"]:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0.0)
+
         st.session_state.data_cache[cache_key] = df
         return df
     except Exception as e:
@@ -170,11 +170,8 @@ def analyze_price_touches(df: pd.DataFrame, levels: List[float], tolerance: floa
 def find_support_resistance_fractal(df_full: pd.DataFrame, window: int = 5, min_touches: int = 2):
     df = df_full.iloc[:-1]
     if len(df) < window * 2 + 1:
-        try:
-            low_min = float(df_full["Low"].min(skipna=True).item())
-            high_max = float(df_full["High"].max(skipna=True).item())
-        except:
-            low_min = high_max = 0.0
+        low_min = float(df_full["Low"].min()) if not df_full["Low"].empty else 0.0
+        high_max = float(df_full["High"].max()) if not df_full["High"].empty else 0.0
         return low_min, high_max, []
     high, low = df["High"], df["Low"]
     res_pts, sup_pts = [], []
@@ -184,13 +181,8 @@ def find_support_resistance_fractal(df_full: pd.DataFrame, window: int = 5, min_
         segment_low = low.iloc[sl]
         if segment_high.empty or segment_low.empty:
             continue
-        try:
-            max_high = float(segment_high.max(skipna=True).item())
-            min_low = float(segment_low.min(skipna=True).item())
-        except:
-            continue
-        if not (np.isfinite(max_high) and np.isfinite(min_low)):
-            continue
+        max_high = float(segment_high.max())
+        min_low = float(segment_low.min())
         if np.isclose(high.iloc[i], max_high, atol=1e-6):
             res_pts.append(max_high)
         if np.isclose(low.iloc[i], min_low, atol=1e-6):
@@ -212,12 +204,9 @@ def find_support_resistance_fractal(df_full: pd.DataFrame, window: int = 5, min_
         return clusters
     res_lv = cluster_points(res_pts)
     sup_lv = cluster_points(sup_pts)
-    try:
-        cur = float(df_full["Close"].iloc[-1].item())
-    except:
-        cur = 0.0
-    resistance = max(res_lv, key=lambda x: (-abs(x - cur), x)) if res_lv else float(df_full["High"].max(skipna=True).item())
-    support = min(sup_lv, key=lambda x: (-abs(x - cur), -x)) if sup_lv else float(df_full["Low"].min(skipna=True).item())
+    cur = float(df_full["Close"].iloc[-1].item()) if len(df_full) > 0 else 0.0
+    resistance = max(res_lv, key=lambda x: (-abs(x - cur), x)) if res_lv else float(df_full["High"].max())
+    support = min(sup_lv, key=lambda x: (-abs(x - cur), -x)) if sup_lv else float(df_full["Low"].min())
     all_levels = list(set(res_lv + sup_lv))
     return support, resistance, all_levels
 
@@ -235,10 +224,7 @@ def detect_breakout(df_full: pd.DataFrame, support: float, resistance: float,
     except:
         return None, None
     vol_tail = df["Volume"].iloc[-(lookback + 1):-1]
-    try:
-        avg_volume = float(vol_tail.mean(skipna=True).item())
-    except:
-        avg_volume = 1.0
+    avg_volume = float(vol_tail.mean()) if len(vol_tail) > 0 else 1.0
     vol_ratio = last_volume / avg_volume if avg_volume > 0 else 0
     vol_ok = (not use_volume) or (vol_ratio > vol_mult)
     buffer = max(support, resistance) * buffer_pct
@@ -349,12 +335,11 @@ def process_symbol(symbol: str):
 
     # ==================== 成交量柱 - 安全版 ====================
     vol_colors = ['lightblue'] * len(df_full)
-    has_signal = signal or custom_signal
+    has_signal = bool(signal or custom_signal)  # 明確布林值
 
-    # 安全計算平均成交量（不含最新一根）
     vol_tail = df_full["Volume"].iloc[-(lookback + 1):-1]
-    avg_volume = vol_tail.mean() if len(vol_tail) > 0 and not vol_tail.empty else 0
-    current_vol = df_full["Volume"].iloc[-1]
+    avg_volume = float(vol_tail.mean()) if len(vol_tail) > 0 else 0.0
+    current_vol = float(df_full["Volume"].iloc[-1].item()) if len(df_full) > 0 else 0.0
 
     if has_signal:
         vol_colors[-1] = 'gold'
@@ -370,7 +355,7 @@ def process_symbol(symbol: str):
     # 突破標記
     if has_signal:
         last_time = df_full.index[-1]
-        last_close = df_full["Close"].iloc[-1]
+        last_close = float(df_full["Close"].iloc[-1].item())  # 確保 float
         fig.add_scatter(
             x=[last_time], y=[last_close],
             mode="markers+text",
@@ -409,10 +394,7 @@ def process_symbol(symbol: str):
     else:
         fig.update_xaxes(tickformat="%Y/%m/%d")
 
-    try:
-        current_price = float(df_full["Close"].iloc[-1].item())
-    except:
-        current_price = 0.0
+    current_price = float(df_full["Close"].iloc[-1].item()) if len(df_full) > 0 else 0.0
 
     return (fig, current_price, support, resistance, signal, signal_key,
             all_levels, df_full, custom_signal, custom_key)
