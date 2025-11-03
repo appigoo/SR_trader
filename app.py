@@ -7,7 +7,7 @@ import plotly.graph_objects as go
 import requests
 import time
 from datetime import datetime
-from typing import Optional, List
+from typing import Optional, List, Dict, Tuple
 
 # ==================== 初始化 ====================
 st.set_page_config(page_title="多股票即時監控面板", layout="wide")
@@ -41,13 +41,52 @@ if interval in ["5m", "15m", "60m"] and period not in ["1d", "5d", "10d", "1mo"]
 lookback = st.sidebar.slider("觀察根數", 20, 300, 100, 10)
 update_freq = st.sidebar.selectbox("更新頻率", ["30秒", "60秒", "3分鐘"], index=1)
 auto_update = st.sidebar.checkbox("自動更新", True)
-use_volume_filter = st.sidebar.checkbox("成交量確認 (>1.5x)", True)
 buffer_pct = st.sidebar.slider("緩衝區 (%)", 0.01, 1.0, 0.1, 0.01) / 100
 sound_alert = st.sidebar.checkbox("聲音提醒", True)
 show_touches = st.sidebar.checkbox("顯示價位觸碰分析", True)
 
 st.sidebar.markdown("---")
 st.sidebar.caption(f"**K線**：{interval_label} | **範圍**：{period_label}")
+
+# ==================== (新) 警報設定 ====================
+st.sidebar.markdown("### 警報設定")
+
+# 1. 自動 S/R 警報
+st.sidebar.markdown("#### 1. 自動 S/R 突破警報")
+use_auto_sr_alerts = st.sidebar.checkbox("啟用自動 S/R 突破警報", True)
+use_volume_filter = st.sidebar.checkbox("自動 S/R 需成交量確認 (>1.5x)", True)
+
+# 2. 獨立成交量警報
+st.sidebar.markdown("#### 2. 獨立成交量警報")
+use_volume_alert = st.sidebar.checkbox("啟用獨立成交量警報", True)
+volume_alert_multiplier = st.sidebar.slider("成交量警報倍數", 1.5, 5.0, 2.5, 0.1)
+
+# 3. 自訂價位警報
+st.sidebar.markdown("#### 3. 自訂價位警報")
+custom_alert_input = st.sidebar.text_area(
+    "自訂警報價位 (每行格式: SYMBOL,價位1,價位2...)",
+    "AAPL,180.5,190\nNVDA,850,900.5"
+)
+
+# (新) 解析自訂價位
+def parse_custom_alerts(text_input: str) -> Dict[str, List[float]]:
+    alerts = {}
+    for line in text_input.split("\n"):
+        parts = [p.strip() for p in line.split(",") if p.strip()]
+        if len(parts) >= 2:
+            symbol = parts[0].upper()
+            try:
+                prices = [float(p) for p in parts[1:]]
+                if symbol not in alerts:
+                    alerts[symbol] = []
+                alerts[symbol].extend(prices)
+            except ValueError:
+                continue # Skip invalid lines
+    return alerts
+
+custom_alert_levels = parse_custom_alerts(custom_alert_input)
+st.sidebar.caption(f"已載入 {len(custom_alert_levels)} 檔股票的自訂價位")
+
 
 # ==================== Telegram 設定 ====================
 try:
@@ -110,12 +149,8 @@ def play_alert_sound():
 # ==================== 手動快取 ====================
 def fetch_data_manual(symbol: str, interval: str, period: str) -> Optional[pd.DataFrame]:
     cache_key = f"{symbol}_{interval}_{period}"
-    
-    # (!!!) 检查：如果缓存中存在，直接返回
     if cache_key in st.session_state.data_cache:
         return st.session_state.data_cache[cache_key]
-        
-    # (!!!) 如果缓存中不存在，则下载
     try:
         df = yf.download(symbol, period=period, interval=interval,
                          progress=False, auto_adjust=True, threads=True)
@@ -123,8 +158,6 @@ def fetch_data_manual(symbol: str, interval: str, period: str) -> Optional[pd.Da
             return None
         df = df[~df.index.duplicated(keep='last')].copy()
         df = df.dropna(how='all')
-        
-        # (!!!) 存入缓存
         st.session_state.data_cache[cache_key] = df
         return df
     except Exception as e:
@@ -226,12 +259,12 @@ def find_support_resistance_fractal(df_full: pd.DataFrame, window: int = 5, min_
     all_levels = list(set(res_lv + sup_lv))
     return support, resistance, all_levels
 
-# ==================== 突破偵測 ====================
-def detect_breakout(df_full: pd.DataFrame, support: float, resistance: float,
-                    buffer_pct: float, use_volume: bool, vol_mult: float, lookback: int, symbol: str):
-    df = df_full.iloc[:-1]
+# ==================== (修改) 警報 1: 自動突破偵測 ====================
+def check_auto_breakout(df_full: pd.DataFrame, support: float, resistance: float,
+                        buffer_pct: float, use_volume: bool, vol_mult: float, lookback: int, symbol: str) -> Optional[Tuple[str, str, str]]:
+    df = df_full.iloc[:-1] # 使用已完成的 K 棒
     if len(df) < 4:
-        return None, None
+        return None
         
     try:
         last_close = float(df["Close"].iloc[-1])
@@ -239,7 +272,7 @@ def detect_breakout(df_full: pd.DataFrame, support: float, resistance: float,
         prev2_close = float(df["Close"].iloc[-3])
         last_volume = float(df["Volume"].iloc[-1])
     except (IndexError, ValueError, TypeError):
-        return None, None
+        return None
 
     vol_tail = df["Volume"].iloc[-(lookback + 1):-1]
     
@@ -255,51 +288,122 @@ def detect_breakout(df_full: pd.DataFrame, support: float, resistance: float,
     
     if (prev2_close <= (resistance - buffer)) and (prev_close <= (resistance - buffer)) and (last_close > resistance) and vol_ok:
         msg = f"突破阻力！\n股票: <b>{symbol}</b>\n現價: <b>{last_close:.2f}</b>\n阻力: {resistance:.2f}"
-        key = f"{symbol}_UP_{resistance:.2f}"
-        return msg, key
+        key = f"{symbol}_AUTO_UP_{resistance:.2f}"
+        return (symbol, msg, key)
         
     if (prev2_close >= (support + buffer)) and (prev_close >= (support + buffer)) and (last_close < support) and vol_ok:
         msg = f"跌破支撐！\n股票: <b>{symbol}</b>\n現價: <b>{last_close:.2f}</b>\n支撐: {support:.2f}"
-        key = f"{symbol}_DN_{support:.2f}"
-        return msg, key
+        key = f"{symbol}_AUTO_DN_{support:.2f}"
+        return (symbol, msg, key)
         
-    return None, None
+    return None
 
-# ==================== 主程式 ====================
-def process_symbol(symbol: str):
+# ==================== (新) 警報 2: 自訂價位偵測 ====================
+def check_custom_price_alerts(symbol: str, df_full: pd.DataFrame, 
+                              custom_levels: List[float]) -> List[Tuple[str, str, str]]:
+    if not custom_levels or len(df_full) < 2:
+        return []
+    
+    try:
+        # 比較最新（可能未完成）的 K 棒
+        last_close = float(df_full["Close"].iloc[-1])
+        prev_close = float(df_full["Close"].iloc[-2])
+    except (IndexError, ValueError):
+        return []
+
+    signals = []
+    for level in custom_levels:
+        # 檢查向上穿越
+        if (prev_close <= level) and (last_close > level):
+            msg = f"觸及自訂價位 (向上)！\n股票: <b>{symbol}</b>\n現價: <b>{last_close:.2f}</b>\n自訂價位: {level:.2f}"
+            key = f"{symbol}_CUSTOM_UP_{level:.2f}"
+            signals.append((symbol, msg, key))
+        # 檢查向下穿越
+        elif (prev_close >= level) and (last_close < level):
+            msg = f"觸及自訂價位 (向下)！\n股票: <b>{symbol}</b>\n現價: <b>{last_close:.2f}</b>\n自訂價位: {level:.2f}"
+            key = f"{symbol}_CUSTOM_DN_{level:.2f}"
+            signals.append((symbol, msg, key))
+    return signals
+
+# ==================== (新) 警報 3: 獨立成交量偵測 ====================
+def check_volume_alert(symbol: str, df_full: pd.DataFrame, 
+                       vol_multiplier: float, lookback: int) -> Optional[Tuple[str, str, str]]:
+    df = df_full.iloc[:-1] # 使用已完成的 K 棒
+    if len(df) < lookback:
+        return None
+    
+    try:
+        last_volume = float(df["Volume"].iloc[-1])
+    except (IndexError, ValueError):
+        return None
+
+    vol_tail = df["Volume"].iloc[-(lookback + 1):-1]
+    if vol_tail.empty:
+        return None
+        
+    try:
+        avg_volume = float(vol_tail.mean(skipna=True))
+    except (ValueError, TypeError):
+        avg_volume = 1.0
+
+    if avg_volume == 0:
+        return None
+        
+    vol_ratio = last_volume / avg_volume
+    
+    if vol_ratio > vol_multiplier:
+        msg = f"成交量激增！\n股票: <b>{symbol}</b>\n現量: {last_volume:,.0f}\n均量: {avg_volume:,.0f} (<b>{vol_ratio:.1f}x</b>)"
+        key = f"{symbol}_VOL_{vol_ratio:.1f}x_{pd.Timestamp.now().floor('T')}" # 加上時間戳，確保獨一無二
+        return (symbol, msg, key)
+    return None
+
+# ==================== 主程式 (重構) ====================
+def process_symbol(symbol: str, custom_levels: List[float]):
     df_full = fetch_data_manual(symbol, interval, period)
     
     if df_full is None or len(df_full) < 15:
-        return None, None, None, None, None, None, [], None
+        return None, None, None, None, [], None
         
-    df = df_full.iloc[:-1] # 分析时排除最新一根
+    df = df_full.iloc[:-1]
     if len(df) < 10:
-        return None, None, None, None, None, None, [], None
+        return None, None, None, None, [], None
         
     window = max(5, lookback // 15)
     support, resistance, all_levels = find_support_resistance_fractal(df_full, window=window, min_touches=2)
-    
-    signal, signal_key = detect_breakout(df_full, support, resistance, buffer_pct,
-                                         use_volume_filter, 1.5, lookback, symbol)
                                          
     fig = go.Figure()
     fig.add_trace(go.Candlestick(x=df_full.index, open=df_full["Open"], high=df_full["High"],
                                  low=df_full["Low"], close=df_full["Close"], name="K線"))
                                  
-    fig.add_hline(y=support, line_dash="dot", line_color="green", annotation_text=f"支撐 {support:.2f}")
-    fig.add_hline(y=resistance, line_dash="dot", line_color="red", annotation_text=f"阻力 {resistance:.2f}")
+    # (新) 需求 1: 添加 SMA 均線
+    sma_period = 20
+    if len(df_full) > sma_period:
+        df_full[f'SMA_{sma_period}'] = df_full['Close'].rolling(window=sma_period).mean()
+        fig.add_trace(go.Scatter(x=df_full.index, y=df_full[f'SMA_{sma_period}'], 
+                                 name=f'SMA {sma_period}', line=dict(color='orange', width=1), 
+                                 opacity=0.7))
+
+    # (新) 需求 1: 添加 S/R 區間背景
+    fig.add_hrect(y0=support, y1=resistance, 
+                  fillcolor="rgba(100, 100, 100, 0.1)", 
+                  layer="below", line_width=0,
+                  annotation_text="S/R Range", annotation_position="right")
+
+    # (新) 需求 1: 強化主要 S/R 線條
+    fig.add_hline(y=support, line_dash="dash", line_color="green", line_width=2, annotation_text=f"支撐 {support:.2f}")
+    fig.add_hline(y=resistance, line_dash="dash", line_color="red", line_width=2, annotation_text=f"阻力 {resistance:.2f}")
     
+    # (新) 需求 1: 弱化其他價位
     for level in all_levels:
-        color = "green" if abs(level - support) < 1e-6 else "red" if abs(level - resistance) < 1e-6 else "gray"
-        fig.add_hline(y=level, line_dash="dot", line_color=color, line_width=1)
-        
+        if not (np.isclose(level, support) or np.isclose(level, resistance)):
+            fig.add_hline(y=level, line_dash="dot", line_color="grey", line_width=1, opacity=0.5)
+
+    # (新) 需求 2: 添加自訂價位線條到圖表
+    for level in custom_levels:
+        fig.add_hline(y=level, line_dash="longdash", line_color="blue", line_width=1.5, 
+                      annotation_text=f"自訂 {level:.2f}", annotation_position="right")
+
     fig.add_trace(go.Bar(x=df_full.index, y=df_full["Volume"], name="成交量", marker_color="lightblue", yaxis="y2"))
-    
-    if signal:
-        last_time = df_full.index[-1]
-        last_close = df_full["Close"].iloc[-1]
-        fig.add_scatter(x=[last_time], y=[last_close], mode="markers",
-                        marker=dict(color="yellow", size=12, symbol="star"), name="突破點")
                         
     fig.update_layout(title=f"{symbol}", height=400, margin=dict(l=20, r=20, t=40, b=20),
                       xaxis_rangeslider_visible=False, yaxis=dict(title="價格"), yaxis2=dict(title="成交量", overlaying="y", side="right"))
@@ -309,7 +413,8 @@ def process_symbol(symbol: str):
     except (IndexError, ValueError, TypeError):
         current_price = 0.0
         
-    return fig, current_price, support, resistance, signal, signal_key, all_levels, df_full
+    # (修改) 不再返回 signal/key
+    return fig, current_price, support, resistance, all_levels, df_full
 
 # ==================== 自動更新 ====================
 interval_map = {"30秒": 30, "60秒": 60, "3分鐘": 180}
@@ -318,7 +423,6 @@ refresh_seconds = interval_map[update_freq]
 if auto_update:
     now = time.time()
     if now - st.session_state.last_update >= refresh_seconds:
-        # (!!!) 关键 Bug 修复 1a: 在 Rerun 之前必须清除缓存
         st.session_state.data_cache = {}
         st.session_state.last_update = now
         time.sleep(1.5)
@@ -328,7 +432,6 @@ if auto_update:
         st.sidebar.caption(f"下次更新：{max(0, remaining)} 秒")
 else:
     if st.sidebar.button("手動更新", type="primary"):
-        # (!!!) 关键 Bug 修复 1b: 手动更新时也必须清除缓存
         st.session_state.data_cache = {}
         st.rerun()
 
@@ -338,9 +441,9 @@ if not symbols:
 
 st.header(f"即時監控中：{', '.join(symbols)} | {interval_label} | {period_label}")
 
-# ==================== 顯示所有股票（含進度條） ====================
+# ==================== 顯示所有股票 (重構警報邏輯) ====================
 results = {}
-breakout_signals = []
+all_generated_signals = [] # (新) 儲存所有警報
 
 # 進度條容器
 progress_container = st.container()
@@ -350,62 +453,85 @@ status_text = progress_container.empty()
 with st.spinner("下載資料与分析中…"):
     total_symbols = len(symbols)
     for idx, symbol in enumerate(symbols):
-        # 更新進度條
         progress = (idx + 1) / total_symbols
         progress_bar.progress(progress)
         status_text.text(f"正在處理：{symbol} ({idx + 1}/{total_symbols})")
 
-        fig, price, support, resistance, signal, key, levels, df_full = process_symbol(symbol)
+        # (新) 獲取該股票的自訂價位
+        symbol_custom_levels = custom_alert_levels.get(symbol, [])
+
+        # (修改) process_symbol 不再返回 signal/key
+        fig, price, support, resistance, levels, df_full = process_symbol(symbol, symbol_custom_levels)
+        
         results[symbol] = {
             "fig": fig, "price": price, "support": support,
-            "resistance": resistance, "signal": signal, "key": key,
-            "levels": levels, "df_full": df_full
+            "resistance": resistance, "levels": levels, "df_full": df_full
         }
-        if signal:
-            breakout_signals.append((symbol, signal, key))
+        
+        # --- (新) 警報生成區 ---
+        if df_full is not None and len(df_full) > 5:
+            
+            # 警報 1: 自動 S/R 突破
+            if use_auto_sr_alerts:
+                auto_signal = check_auto_breakout(df_full, support, resistance, buffer_pct,
+                                                    use_volume_filter, 1.5, lookback, symbol)
+                if auto_signal:
+                    all_generated_signals.append(auto_signal)
+
+            # 警報 2: 自訂價位
+            custom_signals = check_custom_price_alerts(symbol, df_full, symbol_custom_levels)
+            all_generated_signals.extend(custom_signals)
+            
+            # 警報 3: 獨立成交量
+            if use_volume_alert:
+                vol_signal = check_volume_alert(symbol, df_full, volume_alert_multiplier, lookback)
+                if vol_signal:
+                    all_generated_signals.append(vol_signal)
 
     # 完成後清除進度條
     progress_bar.empty()
     status_text.empty()
 
-# ==================== 顯示結果 ====================
+# ==================== 顯示結果 (重構) ====================
 for symbol in symbols:
     data = results.get(symbol)
     if not data or data["fig"] is None:
         st.error(f"**{symbol}** 無資料")
         continue
 
-    if data["signal"]:
+    # (新) 找出這檔股票的所有警報
+    symbol_signals = [s for s in all_generated_signals if s[0] == symbol]
+
+    if symbol_signals:
         st.markdown(f"### **{symbol}**")
-        st.success(data["signal"])
         
-        # (!!!) 关键 Bug 修复 2: 'key' is not defined
-        # 1. 从 data 字典中安全地获取 'key'
-        signal_key = data.get("key") 
-        
-        # 2. 确保 signal_key 存在 (不为 None)
-        if signal_key: 
-            # 3. 使用 signal_key 替代之前未定义的 'key'
-            if st.session_state.last_signal_keys.get(signal_key) != signal_key:
-                st.session_state.last_signal_keys[signal_key] = signal_key
-                st.session_state.signal_history.append({
-                    "time": datetime.now().strftime("%H:%M:%S"),
-                    "symbol": symbol,
-                    "signal": data["signal"]
-                })
-                if len(st.session_state.signal_history) > 20:
-                    st.session_state.signal_history.pop(0)
-                
-                if send_telegram_alert(data["signal"]):
-                    st.success("Telegram 訊號已發送")
-                play_alert_sound()
-        # (!!!) Bug 修复结束
+        # (新) 循環顯示所有警報
+        for (sym, signal_msg, signal_key) in symbol_signals:
+            st.success(signal_msg) # 顯示警報訊息
+            
+            if signal_key: 
+                # 檢查是否為新訊號
+                if st.session_state.last_signal_keys.get(signal_key) != signal_key:
+                    st.session_state.last_signal_keys[signal_key] = signal_key
+                    st.session_state.signal_history.append({
+                        "time": datetime.now().strftime("%H:%M:%S"),
+                        "symbol": symbol,
+                        "signal": signal_msg
+                    })
+                    if len(st.session_state.signal_history) > 20:
+                        st.session_state.signal_history.pop(0)
+                    
+                    if send_telegram_alert(signal_msg):
+                        st.success("Telegram 訊號已發送")
+                    play_alert_sound()
             
     else:
         st.markdown(f"### {symbol}")
 
+    # 顯示圖表
     st.plotly_chart(data["fig"], use_container_width=True)
 
+    # 顯示指標
     c1, c2, c3 = st.columns(3)
     if data["price"] is not None and data["support"] is not None and data["resistance"] is not None:
         try:
@@ -419,6 +545,7 @@ for symbol in symbols:
     else:
         with c1: st.metric("現價", "N/A")
 
+    # 顯示價位觸碰分析
     if show_touches and data["levels"] and data["df_full"] is not None:
         touches = analyze_price_touches(data["df_full"], data["levels"])
         if touches:
@@ -433,6 +560,5 @@ for symbol in symbols:
 if st.session_state.signal_history:
     st.subheader("歷史訊號（最近20筆）")
     for s in reversed(st.session_state.signal_history[-20:]):
-        # 简单地格式化一下 signal 字符串，去除换行符以便于在历史记录中显示
         signal_text = s['signal'].replace('\n', ' | ')
         st.markdown(f"**{s['time']} | {s['symbol']}** → {signal_text}")
