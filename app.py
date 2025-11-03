@@ -133,6 +133,8 @@ def fetch_data_manual(symbol: str, interval: str, period: str) -> Optional[pd.Da
             return None
         df = df[~df.index.duplicated(keep='last')].copy()
         df = df.dropna(how='all')
+        # 確保 Volume 是數值
+        df["Volume"] = pd.to_numeric(df["Volume"], errors='coerce').fillna(0)
         st.session_state.data_cache[cache_key] = df
         return df
     except Exception as e:
@@ -140,7 +142,7 @@ def fetch_data_manual(symbol: str, interval: str, period: str) -> Optional[pd.Da
         return None
 
 # ==================== 價位觸碰分析 ====================
-def analyze_price_touches(df: pd.DataFrame, levels: List[float], tolerance: float = 0.005) -> List[dict]:
+def analyze_price_touches(df: pd.DataFrame, levels: List[float Assy, tolerance: float = 0.005) -> List[dict]:
     touches = []
     high, low = df["High"], df["Low"]
     for level in levels:
@@ -345,13 +347,20 @@ def process_symbol(symbol: str):
             fig.add_hline(y=level, line_dash="dash", line_color="orange", line_width=2,
                           annotation_text=f"自訂 {level:.2f}", annotation_position="top right")
 
-    # 成交量
+    # ==================== 成交量柱 - 安全版 ====================
     vol_colors = ['lightblue'] * len(df_full)
     has_signal = signal or custom_signal
+
+    # 安全計算平均成交量（不含最新一根）
+    vol_tail = df_full["Volume"].iloc[-(lookback + 1):-1]
+    avg_volume = vol_tail.mean() if len(vol_tail) > 0 and not vol_tail.empty else 0
+    current_vol = df_full["Volume"].iloc[-1]
+
     if has_signal:
         vol_colors[-1] = 'gold'
-    elif df_full["Volume"].iloc[-1] > df_full["Volume"].iloc[-(lookback+1):-1].mean() * 1.5:
+    elif avg_volume > 0 and current_vol > avg_volume * 1.5:
         vol_colors[-1] = 'yellow'
+
     fig.add_trace(go.Bar(
         x=df_full.index, y=df_full["Volume"],
         name="成交量", marker_color=vol_colors,
