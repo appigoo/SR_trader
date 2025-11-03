@@ -142,7 +142,7 @@ def fetch_data_manual(symbol: str, interval: str, period: str) -> Optional[pd.Da
         return None
 
 # ==================== 價位觸碰分析 ====================
-def analyze_price_touches(df: pd.DataFrame, levels: List[float Assy, tolerance: float = 0.005) -> List[dict]:
+def analyze_price_touches(df: pd.DataFrame, levels: List[float], tolerance: float = 0.005) -> List[dict]:
     touches = []
     high, low = df["High"], df["Low"]
     for level in levels:
