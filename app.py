@@ -353,11 +353,19 @@ def process_symbol(symbol: str):
         if abs(level - support) > 1e-6 and abs(level - resistance) > 1e-6:
             fig.add_hline(y=level, line=dict(color="gray", width=1, dash="dot"))
 
-    # 成交量（放量高亮）
+    # 成交量（放量高亮） - 修复 Series 问题
     colors = ['lightblue'] * len(df_full)
     if len(df_full) > lookback:
-        avg_vol = df_full["Volume"].iloc[-(lookback+1):-1].mean()
-        last_vol = df_full["Volume"].iloc[-1]
+        vol_tail_series = df_full["Volume"].iloc[-(lookback+1):-1]
+        if not vol_tail_series.empty:
+            avg_vol_series = vol_tail_series.mean()
+            avg_vol = float(avg_vol_series) if pd.notna(avg_vol_series) else np.nan
+        else:
+            avg_vol = np.nan
+        
+        last_vol_series = df_full["Volume"].iloc[-1]
+        last_vol = float(last_vol_series) if pd.notna(last_vol_series) else np.nan
+        
         if pd.notna(avg_vol) and pd.notna(last_vol) and avg_vol > 0:
             if last_vol > avg_vol * volume_alert_mult:
                 colors[-1] = 'red'
