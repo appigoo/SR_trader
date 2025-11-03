@@ -166,8 +166,8 @@ def find_support_resistance_fractal(df_full: pd.DataFrame, window: int = 5, min_
     df = df_full.iloc[:-1]
     if len(df) < window * 2 + 1:
         try:
-            low_min = float(df_full["Low"].min(skipna=True).item())
-            high_max = float(df_full["High"].max(skipna=True).item())
+            low_min = float(df_full["Low"].min(skipna=True))
+            high_max = float(df_full["High"].max(skipna=True))
         except:
             low_min = high_max = 0.0
         return low_min, high_max, []
@@ -180,8 +180,8 @@ def find_support_resistance_fractal(df_full: pd.DataFrame, window: int = 5, min_
         if segment_high.empty or segment_low.empty:
             continue
         try:
-            max_high = float(segment_high.max(skipna=True).item())
-            min_low = float(segment_low.min(skipna=True).item())
+            max_high = float(segment_high.max(skipna=True))
+            min_low = float(segment_low.min(skipna=True))
         except:
             continue
         if not (np.isfinite(max_high) and np.isfinite(min_low)):
@@ -208,11 +208,11 @@ def find_support_resistance_fractal(df_full: pd.DataFrame, window: int = 5, min_
     res_lv = cluster_points(res_pts)
     sup_lv = cluster_points(sup_pts)
     try:
-        cur = float(df_full["Close"].iloc[-1].item())
+        cur = float(df_full["Close"].iloc[-1])
     except:
         cur = 0.0
-    resistance = max(res_lv, key=lambda x: (-abs(x - cur), x)) if res_lv else float(df_full["High"].max(skipna=True).item())
-    support = min(sup_lv, key=lambda x: (-abs(x - cur), -x)) if sup_lv else float(df_full["Low"].min(skipna=True).item())
+    resistance = max(res_lv, key=lambda x: (-abs(x - cur), x)) if res_lv else float(df_full["High"].max(skipna=True))
+    support = min(sup_lv, key=lambda x: (-abs(x - cur), -x)) if sup_lv else float(df_full["Low"].min(skipna=True))
     all_levels = list(set(res_lv + sup_lv))
     return support, resistance, all_levels
 
@@ -223,15 +223,15 @@ def detect_breakout(df_full: pd.DataFrame, support: float, resistance: float,
     if len(df) < 4:
         return None, None
     try:
-        last_close = float(df["Close"].iloc[-1].item())
-        prev_close = float(df["Close"].iloc[-2].item())
-        prev2_close = float(df["Close"].iloc[-3].item()) if len(df) >= 3 else prev_close
-        last_volume = float(df["Volume"].iloc[-1].item())
+        last_close = float(df["Close"].iloc[-1])
+        prev_close = float(df["Close"].iloc[-2])
+        prev2_close = float(df["Close"].iloc[-3]) if len(df) >= 3 else prev_close
+        last_volume = float(df["Volume"].iloc[-1])
     except:
         return None, None
     vol_tail = df["Volume"].iloc[-(lookback + 1):-1]
     try:
-        avg_volume = float(vol_tail.mean(skipna=True).item())
+        avg_volume = float(vol_tail.mean(skipna=True))
     except:
         avg_volume = 1.0
     vol_ratio = last_volume / avg_volume if avg_volume > 0 else 0
@@ -254,14 +254,16 @@ def detect_custom_breakouts(df_full: pd.DataFrame, custom_levels: List[float],
         return [], []
     
     signals = []
-    last_close = df_full["Close"].iloc[-1]
-    last_time = df_full.index[-1]
+    try:
+        last_close = float(df_full["Close"].iloc[-1])
+        prev_close = float(df_full["Close"].iloc[-2])
+    except:
+        return [], []
 
     # 1. 自定義價位突破
     for level in custom_levels:
         if not np.isfinite(level):
             continue
-        prev_close = df_full["Close"].iloc[-2]
         if prev_close <= level and last_close > level:
             msg = f"自定義突破！\n股票: <b>{symbol}</b>\n現價: <b>{last_close:.2f}</b>\n目標價: {level:.2f}"
             key = f"{symbol}_CUST_UP_{level:.2f}"
@@ -271,16 +273,19 @@ def detect_custom_breakouts(df_full: pd.DataFrame, custom_levels: List[float],
             key = f"{symbol}_CUST_DN_{level:.2f}"
             signals.append((msg, key))
 
-    # 2. 放量突破提醒
+    # 2. 放量提醒
     if len(df_full) > lookback:
-        vol_tail = df_full["Volume"].iloc[-(lookback + 1):-1]
-        avg_vol = vol_tail.mean()
-        last_vol = df_full["Volume"].iloc[-1]
-        if avg_vol > 0 and last_vol > avg_vol * volume_alert_mult:
-            ratio = last_vol / avg_vol
-            msg = f"放量警報！\n股票: <b>{symbol}</b>\n成交量: <b>{last_vol:,.0f}</b>\n放大 <b>{ratio:.2f}x</b>"
-            key = f"{symbol}_VOL_{ratio:.2f}x"
-            signals.append((msg, key))
+        try:
+            vol_tail = df_full["Volume"].iloc[-(lookback + 1):-1]
+            avg_vol = float(vol_tail.mean())
+            last_vol = float(df_full["Volume"].iloc[-1])
+            if avg_vol > 0 and last_vol > avg_vol * volume_alert_mult:
+                ratio = last_vol / avg_vol
+                msg = f"放量警報！\n股票: <b>{symbol}</b>\n成交量: <b>{last_vol:,.0f}</b>\n放大 <b>{ratio:.2f}x</b>"
+                key = f"{symbol}_VOL_{ratio:.2f}x"
+                signals.append((msg, key))
+        except:
+            pass
 
     return signals, []
 
@@ -297,8 +302,10 @@ def process_symbol(symbol: str):
     signal, signal_key = detect_breakout(df_full, support, resistance, buffer_pct,
                                          use_volume_filter, 1.5, lookback, symbol)
 
-    # 圖表繪製（增強版）
+    # 圖表繪製（安全版）
     fig = go.Figure()
+
+    # K線
     fig.add_trace(go.Candlestick(
         x=df_full.index, open=df_full["Open"], high=df_full["High"],
         low=df_full["Low"], close=df_full["Close"], name="K線"
@@ -311,11 +318,35 @@ def process_symbol(symbol: str):
         line=dict(color='orange', width=2), name="MA20"
     ))
 
-    # 主要支撐阻力
+    # 確保 support / resistance 是 float
+    try:
+        support = float(support)
+        resistance = float(resistance)
+    except:
+        support = resistance = 0.0
+
+    # 主要支撐阻力（加粗）
     fig.add_hline(y=support, line=dict(color="green", width=3, dash="dot"),
                   annotation_text=f"支撐 {support:.2f}", annotation_position="bottom right")
     fig.add_hline(y=resistance, line=dict(color="red", width=3, dash="dot"),
                   annotation_text=f"阻力 {resistance:.2f}", annotation_position="top right")
+
+    # 支撐/阻力色帶（緩衝區）
+    buffer_low  = support * (1 - buffer_pct)
+    buffer_high = support * (1 + buffer_pct)
+    fig.add_hrect(
+        y0=buffer_low, y1=buffer_high,
+        fillcolor="green", opacity=0.15, line_width=0,
+        annotation_text=f"支撐區 {support:.2f}", annotation_position="bottom right"
+    )
+
+    buffer_low_r  = resistance * (1 - buffer_pct)
+    buffer_high_r = resistance * (1 + buffer_pct)
+    fig.add_hrect(
+        y0=buffer_low_r, y1=buffer_high_r,
+        fillcolor="red", opacity=0.15, line_width=0,
+        annotation_text=f"阻力區 {resistance:.2f}", annotation_position="top right"
+    )
 
     # 其他水平線
     for level in all_levels:
@@ -327,29 +358,38 @@ def process_symbol(symbol: str):
     if len(df_full) > lookback:
         avg_vol = df_full["Volume"].iloc[-(lookback+1):-1].mean()
         last_vol = df_full["Volume"].iloc[-1]
-        if last_vol > avg_vol * volume_alert_mult:
-            colors[-1] = 'red'
+        if pd.notna(avg_vol) and pd.notna(last_vol) and avg_vol > 0:
+            if last_vol > avg_vol * volume_alert_mult:
+                colors[-1] = 'red'
     fig.add_trace(go.Bar(
         x=df_full.index, y=df_full["Volume"], name="成交量",
         marker_color=colors, opacity=0.6, yaxis="y2"
     ))
 
+    # 突破標記
     if signal:
         last_time = df_full.index[-1]
         last_close = df_full["Close"].iloc[-1]
         fig.add_scatter(x=[last_time], y=[last_close], mode="markers",
                         marker=dict(color="yellow", size=12, symbol="star"), name="突破點")
 
-    fig.update_layout(title=f"{symbol}", height=400, margin=dict(l=20, r=20, t=40, b=20),
-                      xaxis_rangeslider_visible=False, yaxis=dict(title="價格"), 
-                      yaxis2=dict(title="成交量", overlaying="y", side="right"))
+    # 更新佈局（安全）
+    fig.update_layout(
+        title=f"{symbol}｜支撐 {support:.2f} → 阻力 {resistance:.2f}",
+        height=500,
+        margin=dict(l=40, r=40, t=60, b=20),
+        xaxis_rangeslider_visible=False,
+        xaxis_title="時間",
+        yaxis=dict(title="價格 (USD)", side="left", showgrid=True),
+        yaxis2=dict(title="成交量", overlaying="y", side="right", showgrid=False),
+        legend=dict(x=0, y=1.1, orientation="h")
+    )
 
     try:
-        current_price = float(df_full["Close"].iloc[-1].item())
+        current_price = float(df_full["Close"].iloc[-1])
     except:
         current_price = 0.0
 
-    # 自定義訊號
     custom_signals, _ = detect_custom_breakouts(df_full, custom_levels, volume_alert_mult, lookback, symbol)
 
     return fig, current_price, support, resistance, signal, signal_key, all_levels, df_full, custom_signals
