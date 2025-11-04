@@ -356,96 +356,140 @@ def process_symbol(symbol: str, custom_levels: List[float]):
         
     window = max(5, lookback // 15)
     support, resistance, all_levels = find_support_resistance_fractal(df_full, window=window, min_touches=2)
+    
+    # 定義EMA週期 (類似截圖: 5,10,20,40,60 等)
+    ema_periods = [5, 10, 20, 40, 60]
+    
+    # 計算所有EMA
+    for period in ema_periods:
+        if len(df_full) > period:
+            df_full[f'EMA_{period}'] = df_full['Close'].ewm(span=period, adjust=False).mean()
                                          
-    # 圖表繪製邏輯... (保持不變)
+    # 主圖表: 完整歷史 (類似截圖風格)
     fig = go.Figure()
+    
+    # K線: 綠漲紅跌, 黑背景
     fig.add_trace(go.Candlestick(x=df_full.index, open=df_full["Open"], high=df_full["High"],
-                                 low=df_full["Low"], close=df_full["Close"], name="K線"))
-                                 
-    sma_period = 20
-    if len(df_full) > sma_period:
-        df_full[f'SMA_{sma_period}'] = df_full['Close'].rolling(window=sma_period).mean()
-        fig.add_trace(go.Scatter(x=df_full.index, y=df_full[f'SMA_{sma_period}'], 
-                                 name=f'SMA {sma_period}', line=dict(color='orange', width=1), 
-                                 opacity=0.7))
-
+                                 low=df_full["Low"], close=df_full["Close"], name="K線",
+                                 increasing_line_color='lime', decreasing_line_color='red',
+                                 increasing_fillcolor='lime', decreasing_fillcolor='red'))
+    
+    # 添加EMA線: 不同顏色
+    colors = ['cyan', 'blue', 'orange', 'magenta', 'yellow']
+    for i, period in enumerate(ema_periods):
+        if f'EMA_{period}' in df_full:
+            fig.add_trace(go.Scatter(x=df_full.index, y=df_full[f'EMA_{period}'], 
+                                     name=f'EMA {period}', line=dict(color=colors[i % len(colors)], width=1),
+                                     opacity=0.8))
+    
+    # S/R 範圍
     fig.add_hrect(y0=support, y1=resistance, 
-                  fillcolor="rgba(100, 100, 100, 0.1)", 
+                  fillcolor="rgba(255, 255, 255, 0.1)", 
                   layer="below", line_width=0,
                   annotation_text="S/R Range", annotation_position="right")
 
+    # 主 S/R 線
     fig.add_hline(y=support, line_dash="dash", line_color="green", line_width=2, annotation_text=f"支撐 {support:.2f}")
     fig.add_hline(y=resistance, line_dash="dash", line_color="red", line_width=2, annotation_text=f"阻力 {resistance:.2f}")
     
+    # 其他水平線
     for level in all_levels:
         if not (np.isclose(level, support) or np.isclose(level, resistance)):
             fig.add_hline(y=level, line_dash="dot", line_color="grey", line_width=1, opacity=0.5)
 
+    # 自訂價位
     for level in custom_levels:
         fig.add_hline(y=level, line_dash="longdash", line_color="blue", line_width=1.5, 
                       annotation_text=f"自訂 {level:.2f}", annotation_position="right")
 
-    fig.add_trace(go.Bar(x=df_full.index, y=df_full["Volume"], name="成交量", marker_color="lightblue", yaxis="y2"))
-                        
-    fig.update_layout(title=f"{symbol}", height=400, margin=dict(l=20, r=20, t=40, b=20),
-                      xaxis_rangeslider_visible=False, yaxis=dict(title="價格"), yaxis2=dict(title="成交量", overlaying="y", side="right"))
+    # 成交量: 根據漲跌顏色
+    df_full['Vol_Color'] = np.where(df_full['Close'] > df_full['Open'], 'green', 'red')
+    fig.add_trace(go.Bar(x=df_full.index, y=df_full["Volume"], name="成交量", 
+                         marker_color=df_full['Vol_Color'], marker_line_color='white', 
+                         marker_line_width=0.5, yaxis="y2", opacity=0.6))
     
-    # (修改) 最近10根K線和成交量子圖 - 更清楚顯示
+    # 更新布局: 黑背景, 類似TradingView
+    fig.update_layout(title=f"{symbol} - 完整K線圖", height=500, 
+                      margin=dict(l=60, r=60, t=60, b=40),
+                      xaxis_rangeslider_visible=False, 
+                      yaxis=dict(title="價格", gridcolor='gray'),
+                      yaxis2=dict(title="成交量", overlaying="y", side="right", gridcolor='gray'),
+                      plot_bgcolor='black', paper_bgcolor='black',
+                      font_color='white',
+                      hovermode='x unified')
+    
+    # (修改) 最近10根K線圖: 更像截圖, 包含OBV子圖
     recent_fig = None
     if len(df_full) >= 10:
         recent_df = df_full.tail(10).copy()
         
-        # 計算最近10根的SMA，使用可用數據的滾動平均
-        if len(recent_df) >= 3:  # 最小窗口為3，避免過短
-            sma_window = min(sma_period, len(recent_df))
-            recent_df[f'SMA_{sma_period}'] = recent_df['Close'].rolling(window=sma_window).mean()
+        # 計算OBV (On-Balance Volume)
+        recent_df['OBV'] = (np.sign(recent_df['Close'].diff()) * recent_df['Volume']).fillna(0).cumsum()
         
-        recent_fig = go.Figure()
+        # 計算EMA (使用可用數據)
+        for period in ema_periods:
+            if len(recent_df) >= period:
+                recent_df[f'EMA_{period}'] = recent_df['Close'].ewm(span=period, adjust=False).mean()
+        
+        # 創建子圖: 上K線+成交量, 中OBV
+        from plotly.subplots import make_subplots
+        recent_fig = make_subplots(rows=2, cols=1, shared_xaxes=True, 
+                                   vertical_spacing=0.03, subplot_titles=('最近10根K線與成交量', 'OBV'),
+                                   row_heights=[0.7, 0.3])
+        
+        # K線
         recent_fig.add_trace(go.Candlestick(x=recent_df.index, open=recent_df["Open"], high=recent_df["High"],
                                             low=recent_df["Low"], close=recent_df["Close"], name="最近K線",
-                                            increasing_line_color='green', decreasing_line_color='red'))
+                                            increasing_line_color='lime', decreasing_line_color='red',
+                                            increasing_fillcolor='lime', decreasing_fillcolor='red'),
+                             row=1, col=1)
         
-        # 添加SMA線，如果存在
-        if f'SMA_{sma_period}' in recent_df:
-            recent_fig.add_trace(go.Scatter(x=recent_df.index, y=recent_df[f'SMA_{sma_period}'], 
-                                            name=f'SMA {sma_period}', line=dict(color='orange', width=2), 
-                                            opacity=0.8))
+        # EMA線
+        for i, period in enumerate(ema_periods):
+            if f'EMA_{period}' in recent_df:
+                recent_fig.add_trace(go.Scatter(x=recent_df.index, y=recent_df[f'EMA_{period}'], 
+                                                name=f'EMA {period}', line=dict(color=colors[i % len(colors)], width=1.5), 
+                                                opacity=0.8), row=1, col=1)
         
-        # 添加支撐/阻力線，更粗以突出
-        recent_fig.add_hline(y=support, line_dash="dash", line_color="green", line_width=3, 
-                             annotation_text=f"支撐 {support:.2f}", annotation_position="top left")
-        recent_fig.add_hline(y=resistance, line_dash="dash", line_color="red", line_width=3, 
-                             annotation_text=f"阻力 {resistance:.2f}", annotation_position="top right")
+        # S/R 線
+        recent_fig.add_hline(y=support, line_dash="dash", line_color="green", line_width=2, 
+                             annotation_text=f"支撐 {support:.2f}", row=1, col=1)
+        recent_fig.add_hline(y=resistance, line_dash="dash", line_color="red", line_width=2, 
+                             annotation_text=f"阻力 {resistance:.2f}", row=1, col=1)
         
-        # 添加自訂價位線
+        # 自訂價位
         for level in custom_levels:
-            recent_fig.add_hline(y=level, line_dash="longdash", line_color="blue", line_width=2, 
-                                 annotation_text=f"自訂 {level:.2f}", annotation_position="bottom")
+            recent_fig.add_hline(y=level, line_dash="longdash", line_color="blue", line_width=2, row=1, col=1)
         
-        # 添加成交量柱，更明顯顏色
-        recent_fig.add_trace(go.Bar(x=recent_df.index, y=recent_df["Volume"], name="最近成交量", 
-                                    marker_color="lightcoral", yaxis="y2", opacity=0.7))
-        
-        # 添加現價水平線
+        # 現價線
         try:
             current_price = float(recent_df["Close"].iloc[-1])
             recent_fig.add_hline(y=current_price, line_dash="solid", line_color="purple", line_width=2, 
-                                 annotation_text=f"現價 {current_price:.2f}", annotation_position="bottom left")
+                                 annotation_text=f"現價 {current_price:.2f}", row=1, col=1)
         except:
             pass
         
-        # 更新布局：更大高度、更清楚標題、自動範圍
-        recent_fig.update_layout(
-            title=f"{symbol} - 最近10根K線與成交量 (放大顯示)",
-            height=350,  # 增加高度以更清楚
-            margin=dict(l=40, r=40, t=50, b=30),  # 增加邊距以容納註解
-            xaxis_rangeslider_visible=False,
-            xaxis=dict(title="時間", tickangle=-45, showgrid=True),  # 傾斜時間標籤，顯示網格
-            yaxis=dict(title="價格", showgrid=True),
-            yaxis2=dict(title="成交量", overlaying="y", side="right", showgrid=True),
-            hovermode='x unified',  # 統一懸停以更清楚比較
-            plot_bgcolor='white'  # 白色背景更清楚
-        )
+        # 成交量
+        recent_df['Vol_Color'] = np.where(recent_df['Close'] > recent_df['Open'], 'green', 'red')
+        recent_fig.add_trace(go.Bar(x=recent_df.index, y=recent_df["Volume"], name="最近成交量", 
+                                    marker_color=recent_df['Vol_Color'], marker_line_color='white', 
+                                    marker_line_width=0.5, yaxis="y2", opacity=0.7), row=1, col=1)
+        
+        # OBV線 (黃色)
+        recent_fig.add_trace(go.Scatter(x=recent_df.index, y=recent_df['OBV'], name="OBV", 
+                                        line=dict(color='yellow', width=2)), row=2, col=1)
+        
+        # 更新布局
+        recent_fig.update_layout(title=f"{symbol} - 最近10根K線 (TradingView風格)", height=600, 
+                                 margin=dict(l=50, r=50, t=60, b=40),
+                                 xaxis_rangeslider_visible=False,
+                                 xaxis3=dict(title="時間", tickangle=-45, gridcolor='gray'),  # 底層x軸
+                                 yaxis=dict(title="價格", gridcolor='gray'),
+                                 yaxis2=dict(title="成交量", overlaying="y", side="right", gridcolor='gray', row=1, col=1),
+                                 yaxis3=dict(title="OBV", gridcolor='gray', row=2, col=1),
+                                 plot_bgcolor='black', paper_bgcolor='black',
+                                 font_color='white',
+                                 hovermode='x unified')
                       
     try:
         current_price = float(df_full["Close"].iloc[-1])
@@ -561,10 +605,10 @@ for symbol in symbols:
     else:
         st.markdown(f"### {symbol}")
 
-    # 顯示圖表 (主圖)
+    # 顯示主圖表
     st.plotly_chart(data["fig"], use_container_width=True)
 
-    # (新增) 顯示最近10根K線與成交量子圖 - 更清楚
+    # 顯示最近10根K線圖 (TradingView風格)
     if data["recent_fig"] is not None:
         st.plotly_chart(data["recent_fig"], use_container_width=True)
 
