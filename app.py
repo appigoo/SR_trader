@@ -344,6 +344,8 @@ def check_volume_alert(symbol: str, df_full: pd.DataFrame,
 
 # ==================== 主程式 (使用新的 cache 函數) ====================
 def process_symbol(symbol: str, custom_levels: List[float]):
+    # 傳遞全局變數避免 UnboundLocalError
+    global interval, period, lookback
     # (修改) 呼叫新的快取函數
     df_full = fetch_data_cache(symbol, interval, period)
     
@@ -361,9 +363,9 @@ def process_symbol(symbol: str, custom_levels: List[float]):
     ema_periods = [5, 10, 20, 40, 60]
     
     # 計算所有EMA
-    for period in ema_periods:
-        if len(df_full) > period:
-            df_full[f'EMA_{period}'] = df_full['Close'].ewm(span=period, adjust=False).mean()
+    for p in ema_periods:
+        if len(df_full) > p:
+            df_full[f'EMA_{p}'] = df_full['Close'].ewm(span=p, adjust=False).mean()
                                          
     # 主圖表: 完整歷史 (類似截圖風格)
     fig = go.Figure()
@@ -376,10 +378,10 @@ def process_symbol(symbol: str, custom_levels: List[float]):
     
     # 添加EMA線: 不同顏色
     colors = ['cyan', 'blue', 'orange', 'magenta', 'yellow']
-    for i, period in enumerate(ema_periods):
-        if f'EMA_{period}' in df_full:
-            fig.add_trace(go.Scatter(x=df_full.index, y=df_full[f'EMA_{period}'], 
-                                     name=f'EMA {period}', line=dict(color=colors[i % len(colors)], width=1),
+    for i, p in enumerate(ema_periods):
+        if f'EMA_{p}' in df_full:
+            fig.add_trace(go.Scatter(x=df_full.index, y=df_full[f'EMA_{p}'], 
+                                     name=f'EMA {p}', line=dict(color=colors[i % len(colors)], width=1),
                                      opacity=0.8))
     
     # S/R 範圍
@@ -427,9 +429,9 @@ def process_symbol(symbol: str, custom_levels: List[float]):
         recent_df['OBV'] = (np.sign(recent_df['Close'].diff()) * recent_df['Volume']).fillna(0).cumsum()
         
         # 計算EMA (使用可用數據)
-        for period in ema_periods:
-            if len(recent_df) >= period:
-                recent_df[f'EMA_{period}'] = recent_df['Close'].ewm(span=period, adjust=False).mean()
+        for p in ema_periods:
+            if len(recent_df) >= p:
+                recent_df[f'EMA_{p}'] = recent_df['Close'].ewm(span=p, adjust=False).mean()
         
         # 創建子圖: 上K線+成交量, 中OBV
         from plotly.subplots import make_subplots
@@ -445,10 +447,10 @@ def process_symbol(symbol: str, custom_levels: List[float]):
                              row=1, col=1)
         
         # EMA線
-        for i, period in enumerate(ema_periods):
-            if f'EMA_{period}' in recent_df:
-                recent_fig.add_trace(go.Scatter(x=recent_df.index, y=recent_df[f'EMA_{period}'], 
-                                                name=f'EMA {period}', line=dict(color=colors[i % len(colors)], width=1.5), 
+        for i, p in enumerate(ema_periods):
+            if f'EMA_{p}' in recent_df:
+                recent_fig.add_trace(go.Scatter(x=recent_df.index, y=recent_df[f'EMA_{p}'], 
+                                                name=f'EMA {p}', line=dict(color=colors[i % len(colors)], width=1.5), 
                                                 opacity=0.8), row=1, col=1)
         
         # S/R 線
@@ -483,10 +485,10 @@ def process_symbol(symbol: str, custom_levels: List[float]):
         recent_fig.update_layout(title=f"{symbol} - 最近10根K線 (TradingView風格)", height=600, 
                                  margin=dict(l=50, r=50, t=60, b=40),
                                  xaxis_rangeslider_visible=False,
-                                 xaxis3=dict(title="時間", tickangle=-45, gridcolor='gray'),  # 底層x軸
+                                 xaxis3=dict(title="時間", tickangle=-45, gridcolor='gray'),
                                  yaxis=dict(title="價格", gridcolor='gray'),
-                                 yaxis2=dict(title="成交量", overlaying="y", side="right", gridcolor='gray', row=1, col=1),
-                                 yaxis3=dict(title="OBV", gridcolor='gray', row=2, col=1),
+                                 yaxis2=dict(title="成交量", overlaying="y", side="right", gridcolor='gray'),
+                                 yaxis3=dict(title="OBV", gridcolor='gray'),
                                  plot_bgcolor='black', paper_bgcolor='black',
                                  font_color='white',
                                  hovermode='x unified')
