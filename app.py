@@ -348,11 +348,11 @@ def process_symbol(symbol: str, custom_levels: List[float]):
     df_full = fetch_data_cache(symbol, interval, period)
     
     if df_full is None or len(df_full) < 15:
-        return None, None, None, None, [], None
+        return None, None, None, None, [], None, None
         
     df = df_full.iloc[:-1]
     if len(df) < 10:
-        return None, None, None, None, [], None
+        return None, None, None, None, [], None, None
         
     window = max(5, lookback // 15)
     support, resistance, all_levels = find_support_resistance_fractal(df_full, window=window, min_touches=2)
@@ -389,13 +389,42 @@ def process_symbol(symbol: str, custom_levels: List[float]):
                         
     fig.update_layout(title=f"{symbol}", height=400, margin=dict(l=20, r=20, t=40, b=20),
                       xaxis_rangeslider_visible=False, yaxis=dict(title="價格"), yaxis2=dict(title="成交量", overlaying="y", side="right"))
+    
+    # (新增) 最近10根K線和成交量子圖
+    recent_fig = None
+    if len(df_full) >= 10:
+        recent_df = df_full.tail(10).copy()
+        if len(recent_df) > sma_period:
+            recent_df[f'SMA_{sma_period}'] = df_full['Close'].tail(10).rolling(window=min(sma_period, 10)).mean()
+        
+        recent_fig = go.Figure()
+        recent_fig.add_trace(go.Candlestick(x=recent_df.index, open=recent_df["Open"], high=recent_df["High"],
+                                            low=recent_df["Low"], close=recent_df["Close"], name="最近K線"))
+        
+        if 'SMA_20' in recent_df:
+            recent_fig.add_trace(go.Scatter(x=recent_df.index, y=recent_df[f'SMA_{sma_period}'], 
+                                            name=f'SMA {sma_period}', line=dict(color='orange', width=1), 
+                                            opacity=0.7))
+        
+        recent_fig.add_hline(y=support, line_dash="dash", line_color="green", line_width=1, 
+                             annotation_text=f"支撐 {support:.2f}")
+        recent_fig.add_hline(y=resistance, line_dash="dash", line_color="red", line_width=1, 
+                             annotation_text=f"阻力 {resistance:.2f}")
+        
+        recent_fig.add_trace(go.Bar(x=recent_df.index, y=recent_df["Volume"], name="最近成交量", 
+                                    marker_color="lightblue", yaxis="y2"))
+        
+        recent_fig.update_layout(title=f"{symbol} - 最近10根K線與成交量", height=250, 
+                                 margin=dict(l=20, r=20, t=30, b=20),
+                                 xaxis_rangeslider_visible=False, yaxis=dict(title="價格"), 
+                                 yaxis2=dict(title="成交量", overlaying="y", side="right"))
                       
     try:
         current_price = float(df_full["Close"].iloc[-1])
     except (IndexError, ValueError, TypeError):
         current_price = 0.0
         
-    return fig, current_price, support, resistance, all_levels, df_full
+    return fig, current_price, support, resistance, all_levels, df_full, recent_fig
 
 # ==================== (修正) 自動更新邏輯 ====================
 interval_map = {"30秒": 30, "60秒": 60, "3分鐘": 180}
@@ -438,12 +467,12 @@ with st.spinner("下載資料与分析中…"):
 
         symbol_custom_levels = custom_alert_levels.get(symbol, [])
 
-        # 呼叫 process_symbol
-        fig, price, support, resistance, levels, df_full = process_symbol(symbol, symbol_custom_levels)
+        # 呼叫 process_symbol (新增 recent_fig 返回)
+        fig, price, support, resistance, levels, df_full, recent_fig = process_symbol(symbol, symbol_custom_levels)
         
         results[symbol] = {
             "fig": fig, "price": price, "support": support,
-            "resistance": resistance, "levels": levels, "df_full": df_full
+            "resistance": resistance, "levels": levels, "df_full": df_full, "recent_fig": recent_fig
         }
         
         # --- 警報生成區 ---
@@ -504,8 +533,12 @@ for symbol in symbols:
     else:
         st.markdown(f"### {symbol}")
 
-    # 顯示圖表
+    # 顯示圖表 (主圖)
     st.plotly_chart(data["fig"], use_container_width=True)
+
+    # (新增) 顯示最近10根K線與成交量子圖
+    if data["recent_fig"] is not None:
+        st.plotly_chart(data["recent_fig"], use_container_width=True)
 
     # 顯示指標
     c1, c2, c3 = st.columns(3)
