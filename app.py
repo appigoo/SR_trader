@@ -82,6 +82,30 @@ def parse_custom_alerts(text_input: str) -> Dict[str, List[float]]:
 custom_alert_levels = parse_custom_alerts(custom_alert_input)
 st.sidebar.caption(f"已載入 {len(custom_alert_levels)} 檔股票的自訂價位")
 
+# ==================== 自訂成交量警報設定 (新增) ====================
+st.sidebar.markdown("#### 自訂成交量警報")
+custom_volume_input = st.sidebar.text_area(
+    "自訂成交量倍數 (每行格式: SYMBOL,倍數)",
+    "AAPL,3.0\nNVDA,4.0"  # 預設範例
+)
+
+# 解析自訂成交量倍數
+def parse_custom_volume_multipliers(text_input: str) -> Dict[str, float]:
+    multipliers = {}
+    for line in text_input.split("\n"):
+        parts = [p.strip() for p in line.split(",") if p.strip()]
+        if len(parts) >= 2:
+            symbol = parts[0].upper()
+            try:
+                multiplier = float(parts[1])
+                if multiplier > 0:
+                    multipliers[symbol] = multiplier
+            except ValueError:
+                continue  # Skip invalid lines
+    return multipliers
+
+custom_volume_multipliers = parse_custom_volume_multipliers(custom_volume_input)
+st.sidebar.caption(f"已載入 {len(custom_volume_multipliers)} 檔股票的自訂成交量倍數")
 
 # ==================== Telegram 設定與函數 (保持不變) ====================
 try:
@@ -309,7 +333,8 @@ def check_custom_price_alerts(symbol: str, df_full: pd.DataFrame,
     return signals
 
 def check_volume_alert(symbol: str, df_full: pd.DataFrame, 
-                       vol_multiplier: float, lookback: int) -> Optional[Tuple[str, str, str]]:
+                       vol_multiplier: float, lookback: int,
+                       custom_multiplier: Optional[float] = None) -> Optional[Tuple[str, str, str]]:
     # ... (函數邏輯，保持不變)
     df = df_full.iloc[:-1] # 使用已完成的 K 棒
     if len(df) < lookback:
@@ -329,15 +354,18 @@ def check_volume_alert(symbol: str, df_full: pd.DataFrame,
     except (ValueError, TypeError):
         avg_volume = 1.0
 
+    # (新增) 使用自訂倍數優先
+    effective_multiplier = custom_multiplier if custom_multiplier is not None else vol_multiplier
+
     if avg_volume == 0:
         return None
         
     vol_ratio = last_volume / avg_volume
     
-    if vol_ratio > vol_multiplier:
+    if vol_ratio > effective_multiplier:
         # 加上時間戳，確保獨一無二，並四捨五入到最近的分鐘
         timestamp = pd.Timestamp.now().floor('T').strftime("%H%M") 
-        msg = f"成交量激增！\n股票: <b>{symbol}</b>\n現量: {last_volume:,.0f}\n均量: {avg_volume:,.0f} (<b>{vol_ratio:.1f}x</b>)"
+        msg = f"成交量激增！\n股票: <b>{symbol}</b>\n現量: {last_volume:,.0f}\n均量: {avg_volume:,.0f} (<b>{vol_ratio:.1f}x</b> | 門檻: {effective_multiplier:.1f}x)"
         key = f"{symbol}_VOL_{vol_ratio:.1f}x_{timestamp}" 
         return (symbol, msg, key)
     return None
@@ -563,9 +591,10 @@ with st.spinner("下載資料与分析中…"):
             custom_signals = check_custom_price_alerts(symbol, df_full, symbol_custom_levels)
             all_generated_signals.extend(custom_signals)
             
-            # 警報 3: 獨立成交量
+            # 警報 3: 獨立成交量 (修改呼叫)
             if use_volume_alert:
-                vol_signal = check_volume_alert(symbol, df_full, volume_alert_multiplier, lookback)
+                symbol_custom_vol_mult = custom_volume_multipliers.get(symbol, None)
+                vol_signal = check_volume_alert(symbol, df_full, volume_alert_multiplier, lookback, symbol_custom_vol_mult)
                 if vol_signal:
                     all_generated_signals.append(vol_signal)
 
