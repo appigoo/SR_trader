@@ -22,7 +22,7 @@ for key in ["last_signal_keys", "signal_history"]:
         st.session_state[key] = ({} if key == "last_signal_keys" else [])
 
 # ==================== 側邊欄選項 ====================
-symbols_input = st.sidebar.text_input("股票代號（逗號分隔）", "TSLA, NIO, META")
+symbols_input = st.sidebar.text_input("股票代號（逗號分隔）", "TSLA,META")
 symbols = [s.strip().upper() for s in symbols_input.split(",") if s.strip()]
 
 interval_options = {"1分鐘": "1m", "5分鐘": "5m", "15分鐘": "15m", "1小時": "60m", "日線": "1d"}
