@@ -29,7 +29,7 @@ interval_options = {"1分鐘": "1m", "5分鐘": "5m", "15分鐘": "15m", "1小�
 interval_label = st.sidebar.selectbox("K線週期", options=list(interval_options.keys()), index=1)
 interval = interval_options[interval_label]
 
-period_options = {"1天": "1d", "5天": "5d", "10天": "10d", "1個月": "1mo", "3個月": "3mo", "1年": "1y"}
+period_options = {"1天": "1d", "5天": "5d", "10天": "10d", "1個月": "1mo", "3個月": "3mo", "1年": "1y","10年": "10y"}
 period_label = st.sidebar.selectbox("資料範圍", options=list(period_options.keys()), index=1)
 period = period_options[period_label]
 
