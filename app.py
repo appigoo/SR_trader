@@ -22,7 +22,7 @@ for key in ["last_signal_keys", "signal_history"]:
         st.session_state[key] = ({} if key == "last_signal_keys" else [])
 
 # ==================== 側邊欄選項 ====================
-symbols_input = st.sidebar.text_input("股票代號（逗號分隔）", "TSLA,META")
+symbols_input = st.sidebar.text_input("股票代號（逗號分隔）", "TSLA,TSLL,NIO,XPEV")
 symbols = [s.strip().upper() for s in symbols_input.split(",") if s.strip()]
 
 interval_options = {"1分鐘": "1m", "5分鐘": "5m", "15分鐘": "15m", "1小時": "60m", "日線": "1d"}
@@ -41,7 +41,7 @@ if interval in ["5m", "15m", "60m"] and period not in ["1d", "5d", "10d", "1mo"]
 # (!!!) 检查结束
 
 lookback = st.sidebar.slider("觀察根數", 20, 300, 100, 10)
-update_freq = st.sidebar.selectbox("更新頻率", ["30秒", "60秒", "3分鐘"], index=1)
+update_freq = st.sidebar.selectbox("更新頻率", ["30秒", "60秒", "3分鐘", "5分鐘"], index=1)
 auto_update = st.sidebar.checkbox("自動更新", True)
 buffer_pct = st.sidebar.slider("緩衝區 (%)", 0.01, 1.0, 0.1, 0.01) / 100
 sound_alert = st.sidebar.checkbox("聲音提醒", True)
@@ -529,7 +529,7 @@ def process_symbol(symbol: str, custom_levels: List[float]):
     return fig, current_price, support, resistance, all_levels, df_full, recent_fig
 
 # ==================== (修正) 自動更新邏輯 ====================
-interval_map = {"30秒": 30, "60秒": 60, "3分鐘": 180}
+interval_map = {"30秒": 30, "60秒": 60, "3分鐘": 180, "5分鐘": 300}
 refresh_milliseconds = interval_map[update_freq] * 1000 # 轉換為毫秒
 
 if auto_update:
