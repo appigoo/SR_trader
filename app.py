@@ -10,7 +10,7 @@ from datetime import datetime
 from typing import Optional, List, Dict, Tuple
 
 # (新增) 引入 Autorefresh 組件
-#from streamlit_autorefresh import st_autorefresh
+from streamlit_autorefresh import st_autorefresh
 
 # ==================== 初始化 ====================
 st.set_page_config(page_title="多股票即時監控面板", layout="wide")
